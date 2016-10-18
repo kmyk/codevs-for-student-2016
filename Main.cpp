@@ -299,10 +299,18 @@ public:
             priority = p;
             next_field = result.field;
         };
+        int limit = 10; {
+            assert (10 < height);
+            repeat (y, 10) {
+                if (whole(count, field.at[height-y-1], empty_block) <= 2) {
+                    limit -= 1;
+                }
+            }
+        }
         repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
             try {
                 simulate_pack_result_t result = simulate_pack(field, pack, input.self_obstacles, make_output(x, r));
-                if (1 <= result.score and result.score <= 9) result.score = -1;
+                if (1 <= result.score and result.score <= limit) result.score = -1;
                 double p = random();
                 if (score == -1) use(x, r, result, p);
                 if (make_pair(score, priority) < make_pair(result.score, p)) use(x, r, result, p);
@@ -316,6 +324,7 @@ public:
         // log
         cerr << endl;
         cerr << "turn: " << input.current_turn << endl;
+        cerr << "limit: " << limit << endl;
         cerr << "score: " << score << endl;
         cerr << next_field << endl;
 
