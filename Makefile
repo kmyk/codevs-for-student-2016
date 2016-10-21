@@ -9,4 +9,4 @@ build/remote:
 	g++ -std=c++11 -O2 Main.cpp
 
 client:
-	javaws codevs_for_student.jnlp | nkf &
+	javaws codevs_for_student.jnlp 2>&1 | nkf &
