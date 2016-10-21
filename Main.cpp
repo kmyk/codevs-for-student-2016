@@ -557,9 +557,24 @@ public:
         cerr << "remaining time: " << input.remaining_time << endl;
 
         // finalize
-        inputs.push_back(input);
-        outputs.push_back(output);
-        scores.push_back(simulate_with_output(field, filled_pack, output).score);
+        if (not is_valid_output(field, filled_pack, output)) {
+            repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
+                try {
+                    simulate_with_output(field, filled_pack, output);
+                    assert (false);
+                } catch (simulate_invalid_output_exception e) {
+                    // nop
+                } catch (simulate_gameover_exception e) {
+                    // nop
+                }
+            }
+            cerr << "lose..." << endl;
+            output = make_output(0, 0);
+        } else {
+            inputs.push_back(input);
+            outputs.push_back(output);
+            scores.push_back(simulate_with_output(field, filled_pack, output).score);
+        }
         return output;
     }
 };
