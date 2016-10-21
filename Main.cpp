@@ -445,7 +445,7 @@ photon_t initial_photon(input_t const & input, int last_score) {
 double evaluate_photon(photon_t const & pho, simulate_with_output_result_t const & result) {
     double acc = 0;
     acc += pho.score; // scoreを基準に
-    acc += 0.8 * estimate_chain(pho.field).score; // 不正確な値だけど比較可能だろうからよい
+    acc += (1.3 - pho.age / 20.0) * estimate_chain(pho.field).score; // 不正確な値だけど比較可能だろうからよい
     if (pho.obstacles > 0) acc -= 3 * pho.obstacles; // 一度降ると消せないので正負に敏感
     acc -= 5 * count_obstacles(pho.field);
     if (result.chain <= 2) acc -= result.score; // 倍率1は手数で損
@@ -506,6 +506,15 @@ public:
         pack_t const & filled_pack = fill_obstacles(pack, input.self_obstacles);
         const int last_score = scores.empty() ? 0 : scores.back();
 
+        // logging
+        cerr << endl;
+        cerr << "turn: " << input.current_turn << endl;
+        cerr << "remaining time: " << input.remaining_time << endl;
+        if (not scores.empty()) cerr << "score: " << scores.back() << endl;
+        cerr << "obstacles: " << input.self_obstacles - input.opponent_obstacles << endl;
+        cerr << "self estimated chain: " << estimate_chain(input.self_field).chain << endl;
+        cerr << "opp. estimated chain: " << estimate_chain(input.opponent_field).chain << endl;
+
         // check
 #ifndef NDEBUG
         if (not inputs.empty()) {
@@ -526,7 +535,7 @@ public:
         // beam search
         output_t output = make_output(0xdeadbeef, 0); {
             const int beam_width = 200;
-            const int beam_depth = 8;
+            const int beam_depth = 6;
             vector<photon_t> beam, nbeam;
             beam.push_back(initial_photon(input, last_score));
             repeat (age, beam_depth) {
@@ -547,14 +556,18 @@ public:
                 if (nbeam.size() > beam_width) nbeam.resize(beam_width);
                 beam.clear();
                 beam.swap(nbeam);
-                if (not beam.empty()) output = beam.front().output;
+                if (not beam.empty()) {
+                    output = beam.front().output;
+                    if (age == beam_depth-1) {
+                        simulate_result_t result = estimate_chain(beam.front().field);
+                        cerr << "beam " << age << " width: " << beam.size() << endl;
+                        cerr << "    score: " << beam.front().score << endl;
+                        cerr << "    estimated chain: " << result.chain << endl;
+                        cerr << "    estimated score: " << result.score << endl;
+                    }
+                }
             }
         }
-
-        // logging
-        cerr << endl;
-        cerr << "turn: " << input.current_turn << endl;
-        cerr << "remaining time: " << input.remaining_time << endl;
 
         // finalize
         if (not is_valid_output(field, filled_pack, output)) {
