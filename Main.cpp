@@ -1,3 +1,7 @@
+#ifndef LOCAL
+#pragma GCC target "tune=native"
+#pragma GCC optimize "O3,omit-frame-pointer,inline"
+#endif
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -174,6 +178,9 @@ const int chain_coefficient[] = {
 int calculate_score(int chain, int erase_count) {
     return chain_coefficient[chain] * (erase_count / 2);
 }
+int count_obstacles_from_delta(int base, int delta) {
+    return (base + delta) / 5 - base / 5;
+}
 
 bool is_valid_output(field_t const & field, pack_t const & a_pack, output_t const & output) {
     if (0 <= output.x and output.x + pack_size <= width) return true;
@@ -330,9 +337,10 @@ struct simulate_with_output_result_t {
     int chain;
     field_t field;
 };
-struct simulate_with_output_gameover_exception {};
+struct simulate_invalid_output_exception {};
+struct simulate_gameover_exception {};
 simulate_with_output_result_t simulate_with_output(field_t const & field, pack_t const & pack, output_t const & output) { // throws exceptions
-    assert (is_valid_output(field, pack, output));
+    if (not is_valid_output(field, pack, output)) throw simulate_invalid_output_exception();
     blocks_t<height + pack_size, width> workspace;
     repeat (y,    height) repeat (x, width) workspace.at[y][x] = field.at[y][x];
     repeat (y, pack_size) repeat (x, width) workspace.at[height + y][x] = empty_block;
@@ -342,7 +350,7 @@ simulate_with_output_result_t simulate_with_output(field_t const & field, pack_t
     // simulate()
     simulate_result_t result = simulate(workspace, height_map, modified_blocks);
     // result
-    repeat (y, pack_size) repeat (x, width) if (workspace.at[height + y][x] != empty_block) throw simulate_with_output_gameover_exception();
+    repeat (y, pack_size) repeat (x, width) if (workspace.at[height + y][x] != empty_block) throw simulate_gameover_exception();
     simulate_with_output_result_t nresult;
     nresult.score = result.score;
     nresult.chain = result.chain;
@@ -350,9 +358,10 @@ simulate_with_output_result_t simulate_with_output(field_t const & field, pack_t
     return nresult;
 }
 
-int estimate_chain(field_t const & field) { // throws exceptions
+// TODO: chain数は正しいけどscoreは不正確なのでいい感じにする
+simulate_result_t estimate_chain(field_t const & field) {
     const array<int,width> height_map = make_height_map(field);
-    int chain = 0;
+    simulate_result_t acc = { -1, 0 };
     repeat (x, width) {
         repeat_reverse (y, height_map[x]) {
             if (field.at[y][x] == empty_block or field.at[y][x] == obstacle_block) continue;
@@ -367,10 +376,104 @@ int estimate_chain(field_t const & field) { // throws exceptions
             vector<point_t> modified_blocks { point(y, x) };
             modified_blocks = erase_blocks(nfield, nheight_map, modified_blocks);
             simulate_result_t result = simulate(nfield, nheight_map, modified_blocks);
-            setmax(chain, result.chain + 1);
+            result.chain += 1; // 修正
+            if (make_pair(acc.chain, acc.score) < make_pair(result.chain, result.score)) {
+                acc = result;
+            }
         }
     }
-    return chain;
+    return acc;
+}
+template <size_t H, size_t W>
+void propagate_obstacles(blocks_t<H,W> & field) {
+    array<array<bool, W>, H> used = {};
+    repeat (y, H) repeat (x, W) {
+        if (field.at[y][x] == obstacle_block) {
+            used[y][x] = true;
+        }
+    }
+    function<void (int, int)> dfs = [&](int y, int x) {
+        used[y][x] = true;
+        repeat_from (dy, -1, 1+1) {
+            repeat_from (dx, -1, 1+1) {
+                int ny = y + dy;
+                int nx = x + dx;
+                if (not is_on_field(ny, nx, H, W)) continue;
+                if (not used[ny][nx]) dfs(ny, nx);
+            }
+        }
+    };
+    repeat (x, W) if (not used[H-1][x]) dfs(H-1, x);
+    repeat (y, H) repeat (x, W) {
+        if (not used[y][x]) {
+            field.at[y][x] = obstacle_block;
+        }
+    }
+}
+template <size_t H, size_t W>
+int count_obstacles(blocks_t<H,W> const & field) {
+    int cnt = 0;
+    repeat (y, H) repeat (x, W) {
+        if (field.at[y][x] == obstacle_block) {
+            cnt += 1;
+        }
+    }
+    return cnt;
+}
+
+struct photon_t {
+    int age;
+    field_t field;
+    int score;
+    int obstacles; // smaller is better
+    double evaluated_value;
+    output_t output;
+};
+bool operator < (photon_t const & a, photon_t const & b) {
+    return a.evaluated_value < b.evaluated_value; // weak
+}
+
+photon_t initial_photon(input_t const & input, int last_score) {
+    photon_t pho;
+    pho.age = 0;
+    pho.field = input.self_field;
+    pho.score = last_score;
+    pho.obstacles = input.self_obstacles - input.opponent_obstacles;
+    pho.output = make_output(0xdeadbeef, 0);
+    return pho;
+}
+double evaluate_photon(photon_t const & pho, simulate_with_output_result_t const & result) {
+    double acc = 0;
+    acc += pho.score; // scoreを基準に
+    acc += 0.8 * estimate_chain(pho.field).score; // 不正確な値だけど比較可能だろうからよい
+    if (pho.obstacles > 0) acc -= 3 * pho.obstacles; // 一度降ると消せないので正負に敏感
+    acc -= 5 * count_obstacles(pho.field);
+    if (result.chain <= 2) acc -= result.score; // 倍率1は手数で損
+    if (result.chain == 3) acc -= result.score * 0.5;
+    acc -= count_obstacles(pho.field);
+    return acc;
+}
+struct update_photon_exception {};
+photon_t update_photon(photon_t const & previous_pho, pack_t const & pack, output_t output) { // throws exceptions
+    photon_t npho = previous_pho;
+    npho.age += 1;
+    int used_obstacles = max(0, min(9, npho.obstacles));
+    npho.obstacles -= used_obstacles;
+    simulate_with_output_result_t result;
+    try {
+        result = simulate_with_output(npho.field, fill_obstacles(pack, used_obstacles), output);
+    } catch (simulate_invalid_output_exception e) {
+        throw update_photon_exception();
+    } catch (simulate_gameover_exception e) {
+        throw update_photon_exception();
+    }
+    npho.obstacles -= count_obstacles_from_delta(npho.score, result.score);
+    npho.score += result.score;
+    npho.field = result.field;
+    propagate_obstacles(npho.field);
+    npho.evaluated_value = evaluate_photon(npho, result);
+    if (previous_pho.age == 0) npho.output = output;
+    return npho;
 }
 
 class AI {
@@ -378,6 +481,7 @@ private:
     config_t config;
     vector<input_t> inputs;
     vector<output_t> outputs;
+    vector<int> scores;
 
 private:
     default_random_engine engine;
@@ -400,8 +504,10 @@ public:
         field_t const & field = input.self_field;
         pack_t const & pack = config.packs[input.current_turn];
         pack_t const & filled_pack = fill_obstacles(pack, input.self_obstacles);
+        const int last_score = scores.empty() ? 0 : scores.back();
 
         // check
+#ifndef NDEBUG
         if (not inputs.empty()) {
             auto & last = inputs.back();
             pack_t const & last_filled_pack = fill_obstacles(config.packs[last.current_turn], last.self_obstacles);
@@ -415,48 +521,45 @@ public:
             }
             assert (result.field == field);
         }
+#endif
 
-        // do
-        output_t output = {};
-        int chain = -1;
-        int score = 0;
-        double priority = 0;
-        field_t next_field = field;
-        auto use = [&](int x, rotate_t r, int c, simulate_with_output_result_t const & result, double p) {
-            output = make_output(x, r);
-            chain = c;
-            score = result.score;
-            priority = p;
-            next_field = result.field;
-        };
-        repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
-            if (not is_valid_output(field, filled_pack, make_output(x, r))) continue;
-            try {
-                simulate_with_output_result_t result = simulate_with_output(field, filled_pack, make_output(x, r));
-                double p = random();
-                int c = estimate_chain(result.field);
-                if (chain == -1) use(x, r, c, result, p);
-                if (result.chain >= 12) {
-                    if (make_tuple(score, priority) < make_tuple(result.score, p)) use(x, r, c, result, p);
-                } else {
-                    if (make_tuple(chain, score, priority) < make_tuple(c, result.score, p)) use(x, r, c, result, p);
+        // beam search
+        output_t output = make_output(0xdeadbeef, 0); {
+            const int beam_width = 200;
+            const int beam_depth = 8;
+            vector<photon_t> beam, nbeam;
+            beam.push_back(initial_photon(input, last_score));
+            repeat (age, beam_depth) {
+                if (input.current_turn + age >= config.packs.size()) break; // game ends
+                for (photon_t const & pho : beam) {
+                    repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
+                        photon_t npho;
+                        try {
+                            npho = update_photon(pho, config.packs[input.current_turn + pho.age], make_output(x, r));
+                            npho.evaluated_value += random() * 0.1; // tiebreak
+                            nbeam.push_back(npho);
+                        } catch (update_photon_exception e) {
+                            continue;
+                        }
+                    }
                 }
-            } catch (simulate_with_output_gameover_exception e) {
-                // nop
+                sort(nbeam.rbegin(), nbeam.rend());
+                if (nbeam.size() > beam_width) nbeam.resize(beam_width);
+                beam.clear();
+                beam.swap(nbeam);
+                if (not beam.empty()) output = beam.front().output;
             }
         }
 
-        // log
+        // logging
         cerr << endl;
         cerr << "turn: " << input.current_turn << endl;
         cerr << "remaining time: " << input.remaining_time << endl;
-        cerr << "estimated chain: " << chain << endl;
-        cerr << "score: " << score << endl;
-        // cerr << next_field << endl;
 
         // finalize
         inputs.push_back(input);
         outputs.push_back(output);
+        scores.push_back(simulate_with_output(field, filled_pack, output).score);
         return output;
     }
 };
