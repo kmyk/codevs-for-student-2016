@@ -385,39 +385,30 @@ simulate_result_t estimate_chain(field_t const & field) {
     return acc;
 }
 template <size_t H, size_t W>
-void propagate_obstacles(blocks_t<H,W> & field) {
+int count_dropped_obstacles(blocks_t<H,W> const & field) {
+    int cnt = 0;
+    repeat (y,H) repeat (x,W) if (field.at[y][x] == obstacle_block) cnt += 1;
+    return cnt;
+}
+// TODO: 実質的な障害物数を計算したいのだが、不完全な推定でしかない
+template <size_t H, size_t W>
+int estimate_effective_dropped_obstacles(blocks_t<H,W> const & field) {
+    int cnt = H * W;
     array<array<bool, W>, H> used = {};
-    repeat (y, H) repeat (x, W) {
-        if (field.at[y][x] == obstacle_block) {
-            used[y][x] = true;
-        }
-    }
     function<void (int, int)> dfs = [&](int y, int x) {
         used[y][x] = true;
+        cnt -= 1;
         repeat_from (dy, -1, 1+1) {
             repeat_from (dx, -1, 1+1) {
                 int ny = y + dy;
                 int nx = x + dx;
                 if (not is_on_field(ny, nx, H, W)) continue;
+                if (field.at[ny][nx] == obstacle_block) continue;
                 if (not used[ny][nx]) dfs(ny, nx);
             }
         }
     };
     repeat (x, W) if (not used[H-1][x]) dfs(H-1, x);
-    repeat (y, H) repeat (x, W) {
-        if (not used[y][x]) {
-            field.at[y][x] = obstacle_block;
-        }
-    }
-}
-template <size_t H, size_t W>
-int count_obstacles(blocks_t<H,W> const & field) {
-    int cnt = 0;
-    repeat (y, H) repeat (x, W) {
-        if (field.at[y][x] == obstacle_block) {
-            cnt += 1;
-        }
-    }
     return cnt;
 }
 
@@ -447,10 +438,10 @@ double evaluate_photon(photon_t const & pho, simulate_with_output_result_t const
     acc += pho.score; // scoreを基準に
     acc += (1.3 - pho.age / 20.0) * estimate_chain(pho.field).score; // 不正確な値だけど比較可能だろうからよい
     if (pho.obstacles > 0) acc -= 3 * pho.obstacles; // 一度降ると消せないので正負に敏感
-    acc -= 5 * count_obstacles(pho.field);
+    acc -= 3 * count_dropped_obstacles(pho.field);
+    acc -= 3 * estimate_effective_dropped_obstacles(pho.field);
     if (result.chain <= 2) acc -= result.score; // 倍率1は手数で損
     if (result.chain == 3) acc -= result.score * 0.5;
-    acc -= count_obstacles(pho.field);
     return acc;
 }
 struct update_photon_exception {};
@@ -470,7 +461,6 @@ photon_t update_photon(photon_t const & previous_pho, pack_t const & pack, outpu
     npho.obstacles -= count_obstacles_from_delta(npho.score, result.score);
     npho.score += result.score;
     npho.field = result.field;
-    propagate_obstacles(npho.field);
     npho.evaluated_value = evaluate_photon(npho, result);
     if (previous_pho.age == 0) npho.output = output;
     return npho;
