@@ -310,10 +310,10 @@ struct simulate_result_t {
     int chain;
 };
 template<size_t H, size_t W>
-simulate_result_t simulate(blocks_t<H,W> & field, array<int,W> & height_map, vector<point_t> modified_blocks) {
+simulate_result_t simulate(blocks_t<H,W> & field, array<int,W> & height_map, vector<point_t> modified_blocks, int initial_chain) {
     // 2. ブロックの消滅&落下処理
     int score = 0;
-    int chain = 0;
+    int chain = initial_chain;
     while (not modified_blocks.empty()) {
         // 検査
         vector<pair<point_t,int> > erases = collect_erases(field, modified_blocks);
@@ -348,9 +348,9 @@ simulate_with_output_result_t simulate_with_output(field_t const & field, pack_t
     array<int,width> height_map = make_height_map(field);
     vector<point_t> modified_blocks = drop_pack(workspace, height_map, pack, output);
     // simulate()
-    simulate_result_t result = simulate(workspace, height_map, modified_blocks);
+    simulate_result_t result = simulate(workspace, height_map, modified_blocks, 0);
     // result
-    repeat (y, pack_size) repeat (x, width) if (workspace.at[height + y][x] != empty_block) throw simulate_gameover_exception();
+    repeat (x, width) if (height_map[x] > height) throw simulate_gameover_exception();
     simulate_with_output_result_t nresult;
     nresult.score = result.score;
     nresult.chain = result.chain;
@@ -358,7 +358,6 @@ simulate_with_output_result_t simulate_with_output(field_t const & field, pack_t
     return nresult;
 }
 
-// TODO: chain数は正しいけどscoreは不正確なのでいい感じにする
 simulate_result_t estimate_chain(field_t const & field) {
     const array<int,width> height_map = make_height_map(field);
     simulate_result_t acc = { -1, 0 };
@@ -375,8 +374,7 @@ simulate_result_t estimate_chain(field_t const & field) {
             array<int,width> nheight_map = height_map;
             vector<point_t> modified_blocks { point(y, x) };
             modified_blocks = erase_blocks(nfield, nheight_map, modified_blocks);
-            simulate_result_t result = simulate(nfield, nheight_map, modified_blocks);
-            result.chain += 1; // 修正
+            simulate_result_t result = simulate(nfield, nheight_map, modified_blocks, 1);
             if (make_pair(acc.chain, acc.score) < make_pair(result.chain, result.score)) {
                 acc = result;
             }
@@ -436,7 +434,7 @@ photon_t initial_photon(input_t const & input, int last_score) {
 double evaluate_photon(photon_t const & pho, simulate_with_output_result_t const & result) {
     double acc = 0;
     acc += pho.score; // scoreを基準に
-    acc += (1.3 - pho.age / 20.0) * estimate_chain(pho.field).score; // 不正確な値だけど比較可能だろうからよい
+    acc += (1 - pho.age / 20.0) * estimate_chain(pho.field).score; // 不正確な値だけど比較可能だろうからよい
     if (pho.obstacles > 0) acc -= 3 * pho.obstacles; // 一度降ると消せないので正負に敏感
     acc -= 3 * count_dropped_obstacles(pho.field);
     acc -= 3 * estimate_effective_dropped_obstacles(pho.field);
