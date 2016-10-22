@@ -16,7 +16,7 @@
   </security>
 
   <resources> 
-    <j2se version="1.8+" max-heap-size="1024m" java-vm-args="-Djava.net.preferIPv4Stack=true"/> 
+    <j2se version="1.8+" min-heap-size="2048m" max-heap-size="2048m" java-vm-args="-Djava.net.preferIPv4Stack=true"/>
     <jar href="https://student.codevs.jp/assets/files/codevs_for_student.jar"/>
   </resources> 
 
