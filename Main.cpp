@@ -382,33 +382,6 @@ simulate_result_t estimate_chain(field_t const & field) {
     }
     return acc;
 }
-template <size_t H, size_t W>
-int count_dropped_obstacles(blocks_t<H,W> const & field) {
-    int cnt = 0;
-    repeat (y,H) repeat (x,W) if (field.at[y][x] == obstacle_block) cnt += 1;
-    return cnt;
-}
-// TODO: 実質的な障害物数を計算したいのだが、不完全な推定でしかない
-template <size_t H, size_t W>
-int estimate_effective_dropped_obstacles(blocks_t<H,W> const & field) {
-    int cnt = H * W;
-    array<array<bool, W>, H> used = {};
-    function<void (int, int)> dfs = [&](int y, int x) {
-        used[y][x] = true;
-        cnt -= 1;
-        repeat_from (dy, -1, 1+1) {
-            repeat_from (dx, -1, 1+1) {
-                int ny = y + dy;
-                int nx = x + dx;
-                if (not is_on_field(ny, nx, H, W)) continue;
-                if (field.at[ny][nx] == obstacle_block) continue;
-                if (not used[ny][nx]) dfs(ny, nx);
-            }
-        }
-    };
-    repeat (x, W) if (not used[H-1][x]) dfs(H-1, x);
-    return cnt;
-}
 
 struct photon_t {
     int age;
@@ -434,12 +407,28 @@ photon_t initial_photon(input_t const & input, int last_score) {
 double evaluate_photon(photon_t const & pho, simulate_with_output_result_t const & result) {
     double acc = 0;
     acc += pho.score; // scoreを基準に
-    acc += (1 - pho.age / 20.0) * estimate_chain(pho.field).score; // 不正確な値だけど比較可能だろうからよい
+    acc += (1 - pho.age / 24.0) * estimate_chain(pho.field).score; // 不正確な値だけど比較可能だろうからよい
     if (pho.obstacles > 0) acc -= 3 * pho.obstacles; // 一度降ると消せないので正負に敏感
-    acc -= 3 * count_dropped_obstacles(pho.field);
-    acc -= 3 * estimate_effective_dropped_obstacles(pho.field);
-    if (result.chain <= 2) acc -= result.score; // 倍率1は手数で損
-    if (result.chain == 3) acc -= result.score * 0.5;
+    // 端によせるべき
+    repeat (y, height) repeat (x, width) {
+        int lx = min(x, width-x-1);
+        if (pho.field.at[y][x] == obstacle_block) {
+            acc += - 4 - 0.3 * y - 0.2 * lx;
+        } else {
+            acc += 1 - 0.04 * y - 0.04 * lx;
+        }
+    }
+    // でこぼこさせない
+    auto height_map = make_height_map(pho.field);
+    acc -= 0.8 * abs(height - height_map[0]);
+    repeat (x, width - 1) acc -= 0.6 * abs(height_map[x] - height_map[x+1]);
+    acc -= 0.8 * abs(height - height_map[width-1]);
+    // 下手な消しはすべきでない 手数で損
+    if (result.chain <= 2) acc -= 1.5 * result.score;
+    if (result.chain == 3) acc -= 1.0 * result.score;
+    if (result.chain == 4) acc -= 0.7 * result.score;
+    if (result.chain == 5) acc -= 0.5 * result.score;
+    if (result.chain == 6) acc -= 0.3 * result.score;
     return acc;
 }
 struct update_photon_exception {};
