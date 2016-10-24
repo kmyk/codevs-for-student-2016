@@ -540,10 +540,14 @@ public:
                         }
                     }
                 }
-                sort(nbeam.rbegin(), nbeam.rend());
-                if (nbeam.size() > beam_width) nbeam.resize(beam_width);
-                beam.clear();
-                beam.swap(nbeam);
+                vector<int> ix(nbeam.size()); whole(iota, ix, 0);
+                int w = min<int>(beam_width, nbeam.size());
+                partial_sort(ix.begin(), ix.begin() + w, ix.end(), [&](int i, int j) {
+                    return nbeam[j] < nbeam[i]; // reversed
+                });
+                beam.resize(w);
+                repeat (i,w) beam[i] = nbeam[ix[i]];
+                nbeam.clear();
                 if (not beam.empty()) {
                     output = beam.front().output;
                     if (age == beam_depth-1) {
