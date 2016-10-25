@@ -1,6 +1,7 @@
 #ifndef LOCAL
 #pragma GCC target "tune=native"
 #pragma GCC optimize "O3,omit-frame-pointer,inline"
+#define NDEBUG
 #endif
 #include <iostream>
 #include <vector>
@@ -444,6 +445,7 @@ double evaluate_photon(photon_t const & pho, simulate_result_t const & result, s
     acc += pho.score; // scoreを基準に
     acc += estimated.chain * 10;
     acc += (1 - 0.08 * pho.age) * estimated.score; // 不正確な値だけど比較可能だろうからよい
+    acc -= 3 * max(0, min(160, pho.obstacles - 18));
     repeat (y, height) repeat (x, width) {
         int dx = min(x, width-x-1);
         if (pho.field.at[y][x] == obstacle_block) {
@@ -559,11 +561,11 @@ public:
 
         // beam search
         if (output.x == 0xdeadbeef) {
-            const int beam_width = 100;
+            const int beam_width = 200;
             const int beam_small_width = 3;
-            const int beam_depth = 10;
+            const int beam_depth = 8;
             vector<photon_t> beam;
-            array<vector<photon_t>, 32> nbeam = {};
+            array<vector<photon_t>, 36> nbeam = {};
             beam.push_back(initial_photon(input, last_score));
             repeat (age, beam_depth) {
                 if (input.current_turn + age >= config.packs.size()) break; // game ends
