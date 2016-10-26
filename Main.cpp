@@ -1,8 +1,3 @@
-#ifndef LOCAL
-#pragma GCC target "tune=native"
-#pragma GCC optimize "O3,omit-frame-pointer,inline"
-#define NDEBUG
-#endif
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -520,21 +515,19 @@ public:
         cerr << "opp. estimated chain: " << estimate_chain(input.opponent_field).chain << endl;
 
         // check
-#ifndef NDEBUG
         if (not inputs.empty()) {
             auto & last = inputs.back();
             pack_t const & last_filled_pack = fill_obstacles(config.packs[last.current_turn], last.self_obstacles);
             simulate_result_t result; field_t nfield; tie(result, nfield) = simulate_with_output(last.self_field, last_filled_pack, outputs.back());
-            if (result.field != field) {
+            if (nfield != field) {
                 cerr << "<<<" << endl;
-                cerr << result.field << endl;
+                cerr << nfield << endl;
                 cerr << "===" << endl;
                 cerr << field << endl;
                 cerr << ">>>" << endl;
             }
-            assert (result.field == field);
+            assert (nfield == field);
         }
-#endif
 
         output_t output = make_output(0xdeadbeef, 0);
 
