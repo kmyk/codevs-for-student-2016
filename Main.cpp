@@ -219,50 +219,42 @@ vector<point_t> drop_pack(blocks_t<height + pack_size, width> & field, array<int
     }
     return modified_blocks;
 }
-point_t simulate_point_from(point_t const & p, int d, int i) {
-    const int dy[] = { -1, -1, 0, 1 }; // 下 右下 右 右上
-    const int dx[] = {  0,  1, 1, 1 };
-    int ny = p.y + dy[d] * i;
-    int nx = p.x + dx[d] * i;
-    return point(ny, nx);
-}
-template<size_t H, size_t W>
-block_t simulate_at_from(blocks_t<H,W> const & field, point_t const & q, int d, int i) {
-    point_t p = simulate_point_from(q, d, i);
-    if (not is_on_field(p.y, p.x, H, W)) return obstacle_block;
-    if (field.at[p.y][p.x] == empty_block) return obstacle_block;
-    return field.at[p.y][p.x];
-}
 template<size_t H, size_t W>
 vector<pair<point_t,int> > collect_erases(blocks_t<H,W> const & field, vector<point_t> const & modified_blocks) {
-    static const point_t delta[] = { { -1, 0 }, { -1, 1 }, { 0, 1 }, { 1, 1 } }; // 下 右下 右 右上
+    static const int dy[] = { -1, -1, 0, 1 }; // 下 右下 右 右上
+    static const int dx[] = {  0,  1, 1, 1 };
     vector<pair<point_t,int> > erases;
     for (point_t p : modified_blocks) { // 変化したところだけ見る
         assert (field.at[p.y][p.x] != empty_block and field.at[p.y][p.x] != obstacle_block);
         repeat (j, 4) {
             int cnt = 1;
             int acc = field.at[p.y][p.x];
-            point_t l = p - delta[j];
-            for (; is_on_field(l.y, l.x, H, W); ++ cnt) {
-                block_t block = field.at[l.y][l.x];
+            int ly = p.y - dy[j];
+            int lx = p.x - dx[j];
+            for (; is_on_field(ly, lx, H, W); ++ cnt) {
+                block_t block = field.at[ly][lx];
                 if (block == empty_block) break;
                 if (acc + block > sum) break;
                 acc += block;
-                l -= delta[j];
+                ly -= dy[j];
+                lx -= dx[j];
             }
             // しゃくとり法っぽく
-            point_t r = p + delta[j];
+            int ry = p.y + dy[j];
+            int rx = p.x + dx[j];
             while (cnt --) {
-                while (is_on_field(r.y, r.x, H, W)) {
-                    block_t block = field.at[r.y][r.x];
+                while (is_on_field(ry, rx, H, W)) {
+                    block_t block = field.at[ry][rx];
                     if (block == empty_block) break;
                     if (acc + block > sum) break;
                     acc += block;
-                    r += delta[j];
+                    ry += dy[j];
+                    rx += dx[j];
                 }
-                l += delta[j];
-                if (acc == sum) erases.emplace_back(l, j);
-                acc -= field.at[l.y][l.x];
+                ly += dy[j];
+                lx += dx[j];
+                if (acc == sum) erases.emplace_back(point(ly, lx), j);
+                acc -= field.at[ly][lx];
             }
         }
     }
@@ -272,7 +264,8 @@ vector<pair<point_t,int> > collect_erases(blocks_t<H,W> const & field, vector<po
 }
 template<size_t H, size_t W>
 pair<int, vector<point_t> > apply_erases(blocks_t<H,W> const & field, vector<pair<point_t,int> > const & erases) {
-    static const point_t delta[] = { { -1, 0 }, { -1, 1 }, { 0, 1 }, { 1, 1 } }; // 下 右下 右 右上
+    static const int dy[] = { -1, -1, 0, 1 }; // 下 右下 右 右上
+    static const int dx[] = {  0,  1, 1, 1 };
     int erase_count = 0;
     vector<point_t> used;
     for (auto && it : erases) {
@@ -283,7 +276,8 @@ pair<int, vector<point_t> > apply_erases(blocks_t<H,W> const & field, vector<pai
             if (block == empty_block) break;
             acc += block;
             used.push_back(p);
-            p += delta[j];
+            p.y += dy[j];
+            p.x += dx[j];
         }
         erase_count += cnt;
     }
