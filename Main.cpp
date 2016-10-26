@@ -440,6 +440,7 @@ field_ptr_t null_field_ptr() {
 }
 bool operator < (field_ptr_t const & a, field_ptr_t const & b) {
     if (a.hash != b.hash) return a.hash < b.hash; // 辞書順
+    if (a.field == b.field) return false;
     return *a.field < *b.field;
 }
 
@@ -479,7 +480,7 @@ double evaluate_photon(photon_t & pho, simulate_result_t const & result, simulat
     repeat (x, width) repeat (y, height) {
         int dx = min(x, width-x-1);
         if (pho.ptr.field->at[x][y] == obstacle_block) {
-            acc -= 4 + 0.1 * y + 0.4 * dx;
+            acc -= 5 + 2 * y + 3 * dx;
         }
     }
     if (result.chain <= 2) acc -= 3.0 * result.score; // 手数で損
@@ -494,6 +495,7 @@ double evaluate_photon(photon_t & pho, simulate_result_t const & result, simulat
 }
 
 struct update_photon_exception {};
+const int memo_limit = 5;
 photon_t update_photon(photon_t const & previous_pho, pack_t const & pack, output_t output, state_summary_t const & oppo_sum,
         map<tuple<field_ptr_t, int, output_t>, pair<simulate_result_t, field_ptr_t> > & sim_memo,
         map<field_ptr_t, simulate_result_t> & est_memo) { // throws exceptions
@@ -510,7 +512,7 @@ photon_t update_photon(photon_t const & previous_pho, pack_t const & pack, outpu
             field_t nfield;
             tie(result, nfield) = simulate_with_output(*npho.ptr.field, fill_obstacles(pack, used_obstacles), output);
             npho.ptr = new_field_ptr(nfield);
-            if (result.chain >= 5) sim_memo[sim_key] = { result, npho.ptr };
+            if (result.chain >= memo_limit) sim_memo[sim_key] = { result, npho.ptr };
         } catch (simulate_invalid_output_exception e) {
             throw update_photon_exception();
         } catch (simulate_gameover_exception e) {
@@ -546,7 +548,6 @@ private:
     }
 
 private:
-    static const int beam_width = 200;
     static const int beam_small_width = 3;
     static const int beam_depth = 8;
     static const int beam_chain_max = 36;
@@ -613,6 +614,12 @@ public:
         }
 
         // beam search
+        int beam_width =
+            input.remaining_time < 10 * 1000 ?  60 :
+            input.remaining_time < 20 * 1000 ? 100 :
+            input.remaining_time < 30 * 1000 ? 160 :
+            input.remaining_time < 40 * 1000 ? 200 :
+            250;
         sim_memo[(input.current_turn + beam_depth - 1) % beam_depth].clear();
         est_memo[(input.current_turn + beam_depth - 1) % beam_depth].clear();
         if (output.x == 0xdeadbeef) {
