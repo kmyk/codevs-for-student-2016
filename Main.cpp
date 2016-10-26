@@ -81,6 +81,7 @@ namespace primitive {
     }
     template <size_t H, size_t W> bool operator == (blocks_t<H, W> const & a, blocks_t<H, W> const & b) { return a.at == b.at; }
     template <size_t H, size_t W> bool operator != (blocks_t<H, W> const & a, blocks_t<H, W> const & b) { return a.at != b.at; }
+    template <size_t H, size_t W> bool operator <  (blocks_t<H, W> const & a, blocks_t<H, W> const & b) { return a.at <  b.at; }
 
     const int dangerline = height + 1;
     struct config_t {
@@ -126,6 +127,9 @@ namespace primitive {
     }
     output_t make_output(int x, rotate_t rotate) {
         return { x, rotate };
+    }
+    bool operator < (output_t const & a, output_t const & b) {
+        return make_pair(a.x, a.rotate) < make_pair(b.x, b.rotate);
     }
 }
 using namespace primitive;
@@ -418,9 +422,36 @@ state_summary_t summarize_state(config_t const & config, int current_turn, field
     return info;
 }
 
+struct field_ptr_t {
+    array<uint64_t,2> hash;
+    shared_ptr<field_t> field;
+};
+field_ptr_t new_field_ptr(field_t const & field) {
+    field_ptr_t ptr;
+    string s(height * width, '\0');
+    string t(height * width, '\0');
+    repeat (x, width) repeat (y, height) {
+        if (field.at[x][y] == empty_block) break;
+        s[x * width + y] = field.at[x][y];
+        t[x * width + y] = field.at[x][y] << 4;
+    }
+    ptr.hash[0] = hash<string>()(s);
+    ptr.hash[1] = hash<string>()(t);
+    ptr.field = make_shared<field_t>(field);
+    return ptr;
+}
+field_ptr_t null_field_ptr() {
+    field_ptr_t ptr = {};
+    return ptr;
+}
+bool operator < (field_ptr_t const & a, field_ptr_t const & b) {
+    if (a.hash != b.hash) return a.hash < b.hash; // 辞書順
+    return *a.field < *b.field;
+}
+
 struct photon_t {
     int age;
-    field_t field;
+    field_ptr_t ptr;
     int estimated_chain;
     int score;
     int obstacles; // smaller is better
@@ -435,7 +466,7 @@ bool operator < (photon_t const & a, photon_t const & b) {
 photon_t initial_photon(input_t const & input, int last_score) {
     photon_t pho;
     pho.age = 0;
-    pho.field = input.self_field;
+    pho.ptr = new_field_ptr(input.self_field);
     pho.estimated_chain = -1;
     pho.score = last_score;
     pho.obstacles = input.self_obstacles - input.opponent_obstacles;
@@ -452,7 +483,7 @@ double evaluate_photon(photon_t & pho, simulate_result_t const & result, simulat
     acc -= 3 * max(0, min(160, pho.obstacles - 18));
     repeat (x, width) repeat (y, height) {
         int dx = min(x, width-x-1);
-        if (pho.field.at[x][y] == obstacle_block) {
+        if (pho.ptr.field->at[x][y] == obstacle_block) {
             acc -= 4 + 0.1 * y + 0.4 * dx;
         }
     }
@@ -467,22 +498,33 @@ double evaluate_photon(photon_t & pho, simulate_result_t const & result, simulat
     return acc;
 }
 struct update_photon_exception {};
-photon_t update_photon(photon_t const & previous_pho, pack_t const & pack, output_t output, state_summary_t const & oppo_sum) { // throws exceptions
+photon_t update_photon(photon_t const & previous_pho, pack_t const & pack, output_t output, state_summary_t const & oppo_sum,
+        map<tuple<field_ptr_t, int, output_t>, pair<simulate_result_t, field_ptr_t> > & sim_memo,
+        map<field_ptr_t, simulate_result_t> & est_memo) { // throws exceptions
     photon_t npho = previous_pho;
     npho.age += 1;
     int used_obstacles = max(0, min(9, npho.obstacles));
     npho.obstacles -= used_obstacles;
     simulate_result_t result;
-    try {
-        tie(result, npho.field) = simulate_with_output(npho.field, fill_obstacles(pack, used_obstacles), output);
-    } catch (simulate_invalid_output_exception e) {
-        throw update_photon_exception();
-    } catch (simulate_gameover_exception e) {
-        throw update_photon_exception();
+    auto sim_key = make_tuple(npho.ptr, used_obstacles, output);
+    if (sim_memo.count(sim_key)) {
+        tie(result, npho.ptr) = sim_memo[sim_key]; // errorなら登録されてない (いっそ落とした方が速い)
+    } else {
+        try {
+            field_t nfield;
+            tie(result, nfield) = simulate_with_output(*npho.ptr.field, fill_obstacles(pack, used_obstacles), output);
+            npho.ptr = new_field_ptr(nfield);
+            if (result.chain >= 5) sim_memo[sim_key] = { result, npho.ptr };
+        } catch (simulate_invalid_output_exception e) {
+            throw update_photon_exception();
+        } catch (simulate_gameover_exception e) {
+            throw update_photon_exception();
+        }
     }
     npho.obstacles -= count_obstacles_from_delta(npho.score, result.score);
     npho.score += result.score;
-    simulate_result_t estimated = estimate_chain(npho.field);
+    if (not est_memo.count(npho.ptr)) est_memo[npho.ptr] = estimate_chain(*npho.ptr.field);
+    simulate_result_t estimated = est_memo[npho.ptr];
     npho.estimated_chain = estimated.chain;
     npho.evaluated_value = evaluate_photon(npho, result, estimated, oppo_sum);
     if (previous_pho.age == 0) npho.output = output;
@@ -506,6 +548,14 @@ private:
         uniform_int_distribution<int> dist(l, r);
         return dist(engine);
     }
+
+private:
+    static const int beam_width = 200;
+    static const int beam_small_width = 3;
+    static const int beam_depth = 8;
+    static const int beam_chain_max = 36;
+    array<map<tuple<field_ptr_t, int, output_t>, pair<simulate_result_t, field_ptr_t> >, beam_depth> sim_memo;
+    array<map<field_ptr_t, simulate_result_t>, beam_depth> est_memo;
 
 public:
     AI(config_t const & a_config) {
@@ -567,19 +617,19 @@ public:
         }
 
         // beam search
+        sim_memo[(input.current_turn + beam_depth - 1) % beam_depth].clear();
+        est_memo[(input.current_turn + beam_depth - 1) % beam_depth].clear();
         if (output.x == 0xdeadbeef) {
-            const int beam_width = 200;
-            const int beam_small_width = 3;
-            const int beam_depth = 8;
             vector<photon_t> beam;
-            array<vector<photon_t>, 36> nbeam = {};
+            array<vector<photon_t>, beam_chain_max> nbeam = {};
             beam.push_back(initial_photon(input, last_score));
             repeat (age, beam_depth) {
+                int memo_ix = (input.current_turn + age) % beam_depth;
                 if (input.current_turn + age >= config.packs.size()) break; // game ends
                 for (photon_t const & pho : beam) {
                     repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
                         try {
-                            photon_t npho = update_photon(pho, config.packs[input.current_turn + pho.age], make_output(x, r), oppo_sum);
+                            photon_t npho = update_photon(pho, config.packs[input.current_turn + pho.age], make_output(x, r), oppo_sum, sim_memo[memo_ix], est_memo[memo_ix]);
                             npho.evaluated_value += random() * 0.1; // tiebreak
                             nbeam[npho.estimated_chain].push_back(npho);
                         } catch (update_photon_exception e) {
@@ -608,7 +658,7 @@ public:
                     photon_t & pho = *whole(max_element, beam);
                     output = pho.output;
                     if (age == beam_depth-1) {
-                        simulate_result_t result = estimate_chain(pho.field);
+                        simulate_result_t result = estimate_chain(*pho.ptr.field);
                         cerr << "beam " << age << " width: " << beam.size() << endl;
                         cerr << "    evaluated: " << pho.evaluated_value << endl;
                         cerr << "    chain: + " << result.chain << endl;
