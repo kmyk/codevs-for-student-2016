@@ -9,8 +9,10 @@ archive:
 	zip Main.zip run.sh Makefile Main.cpp
 
 build: build/fast
-build/debug:
+build/debug/slow:
 	$(CXX) $(CXXFLAGS) -g -fsanitize=undefined -D_GLIBCXX_DEBUG Main.cpp
+build/debug:
+	$(CXX) $(CXXFLAGS) -g Main.cpp
 build/fast:
 	$(CXX) $(CXXFLAGS) -DNDEBUG Main.cpp
 build/fast/profile-generate:

@@ -40,12 +40,12 @@ namespace primitive {
     const int pack_size = 3;
     const int width = 10;
     const int height = 16;
-    const int sum = 10;
+    const int erasing_sum = 10;
     const int turn_number = 500;
 
     typedef char block_t;
     const block_t empty_block = 0;
-    const block_t obstacle_block = sum + 1;
+    const block_t obstacle_block = erasing_sum + 1;
     template <size_t H, size_t W>
     struct blocks_t {
         array<array<block_t, H>, W> at; // 左下が原点, x座標が先
@@ -86,7 +86,7 @@ namespace primitive {
     const int dangerline = height + 1;
     struct config_t {
         // int width, height;
-        // int pack_size, sum;
+        // int pack_size, erasing_sum;
         vector<pack_t> packs;
     };
     istream & operator >> (istream & in, config_t & a) {
@@ -94,7 +94,7 @@ namespace primitive {
         assert (w == width);
         assert (h == height);
         assert (t == pack_size);
-        assert (s == sum);
+        assert (s == erasing_sum);
         assert (n == turn_number);
         a.packs.resize(turn_number);
         repeat (i,n) in >> a.packs[i];
@@ -122,15 +122,9 @@ namespace primitive {
         int x;
         rotate_t rotate;
     };
-    ostream & operator << (ostream & out, output_t const & a) {
-        return out << a.x << ' ' << a.rotate;
-    }
-    output_t make_output(int x, rotate_t rotate) {
-        return { x, rotate };
-    }
-    bool operator < (output_t const & a, output_t const & b) {
-        return make_pair(a.x, a.rotate) < make_pair(b.x, b.rotate);
-    }
+    ostream & operator << (ostream & out, output_t const & a) { return out << a.x << ' ' << a.rotate; }
+    output_t make_output(int x, rotate_t rotate) { return { x, rotate }; }
+    bool operator < (output_t const & a, output_t const & b) { return make_pair(a.x, a.rotate) < make_pair(b.x, b.rotate); }
 }
 using namespace primitive;
 
@@ -238,7 +232,7 @@ vector<pair<point_t,int> > collect_erases(blocks_t<H,W> const & field, vector<po
             for (; is_on_field(ly, lx, H, W); ++ cnt) {
                 block_t block = field.at[lx][ly];
                 if (block == empty_block) break;
-                if (acc + block > sum) break;
+                if (acc + block > erasing_sum) break;
                 acc += block;
                 ly -= dy[j];
                 lx -= dx[j];
@@ -250,14 +244,14 @@ vector<pair<point_t,int> > collect_erases(blocks_t<H,W> const & field, vector<po
                 while (is_on_field(ry, rx, H, W)) {
                     block_t block = field.at[rx][ry];
                     if (block == empty_block) break;
-                    if (acc + block > sum) break;
+                    if (acc + block > erasing_sum) break;
                     acc += block;
                     ry += dy[j];
                     rx += dx[j];
                 }
                 ly += dy[j];
                 lx += dx[j];
-                if (acc == sum) erases.emplace_back(point(ly, lx), j);
+                if (acc == erasing_sum) erases.emplace_back(point(ly, lx), j);
                 acc -= field.at[lx][ly];
             }
         }
@@ -275,7 +269,7 @@ pair<int, vector<point_t> > apply_erases(blocks_t<H,W> const & field, vector<pai
     for (auto && it : erases) {
         point_t p; int j; tie(p, j) = it;
         int cnt = 0, acc = 0;
-        for (; acc != sum; ++ cnt) {
+        for (; acc != erasing_sum; ++ cnt) {
             acc += field.at[p.x][p.y];
             used.push_back(p);
             p.y += dy[j];
@@ -475,6 +469,7 @@ photon_t initial_photon(input_t const & input, int last_score) {
     pho.permanent_bonus = 0;
     return pho;
 }
+
 double evaluate_photon(photon_t & pho, simulate_result_t const & result, simulate_result_t const & estimated, state_summary_t const & oppo_sum) {
     double acc = 0;
     acc += pho.score; // scoreを基準に
@@ -497,6 +492,7 @@ double evaluate_photon(photon_t & pho, simulate_result_t const & result, simulat
     acc += pho.permanent_bonus;
     return acc;
 }
+
 struct update_photon_exception {};
 photon_t update_photon(photon_t const & previous_pho, pack_t const & pack, output_t output, state_summary_t const & oppo_sum,
         map<tuple<field_ptr_t, int, output_t>, pair<simulate_result_t, field_ptr_t> > & sim_memo,
@@ -668,7 +664,6 @@ public:
             }
         }
 
-
         // finalize
         if (not is_valid_output(field, filled_pack, output)) {
             repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
@@ -686,9 +681,7 @@ public:
         } else {
             inputs.push_back(input);
             outputs.push_back(output);
-            int score = simulate_with_output(field, filled_pack, output).first.score;
-            scores.push_back(score);
-            cerr << "output score : " << score << endl;
+            scores.push_back(last_score + simulate_with_output(field, filled_pack, output).first.score);
         }
         return output;
     }
