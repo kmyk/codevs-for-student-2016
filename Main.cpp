@@ -68,10 +68,10 @@ namespace primitive {
     template <size_t H, size_t W>
     ostream & operator << (ostream & out, blocks_t<H, W> const & a) {
         repeat_reverse (y, H) {
-            if (y) out << endl;
+            if (y != H-1) out << endl;
             repeat (x, W) {
                 switch (a.at[x][y]) {
-                    case empty_block: out << "  "; break; // 私のJava環境上では空白2つがちょうど良い幅になる
+                    case empty_block: out << ' '; break;
                     case obstacle_block: out << '#'; break;
                     default: out << int(a.at[x][y]); break;
                 }
@@ -142,8 +142,8 @@ pack_t rotate(pack_t a, rotate_t r) {
 }
 
 pack_t fill_obstacles(pack_t a, int obstacles) {
-    repeat (x, pack_size) {
-        repeat_reverse (y, pack_size) {
+    repeat_reverse (y, pack_size) { // yが先
+        repeat (x, pack_size) {
             if (obstacles and a.at[x][y] == empty_block) {
                 a.at[x][y] = obstacle_block;
                 obstacles -= 1;
@@ -271,10 +271,8 @@ pair<int, vector<point_t> > apply_erases(blocks_t<H,W> const & field, vector<pai
     for (auto && it : erases) {
         point_t p; int j; tie(p, j) = it;
         int cnt = 0, acc = 0;
-        for (; acc < sum and is_on_field(p.y, p.x, H, W); ++ cnt) {
-            block_t block = field.at[p.x][p.y];
-            if (block == empty_block) break;
-            acc += block;
+        for (; acc != sum; ++ cnt) {
+            acc += field.at[p.x][p.y];
             used.push_back(p);
             p.y += dy[j];
             p.x += dx[j];
@@ -638,7 +636,9 @@ public:
         } else {
             inputs.push_back(input);
             outputs.push_back(output);
-            scores.push_back(simulate_with_output(field, filled_pack, output).first.score);
+            int score = simulate_with_output(field, filled_pack, output).first.score;
+            scores.push_back(score);
+            cerr << "output score : " << score << endl;
         }
         return output;
     }
