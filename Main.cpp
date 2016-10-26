@@ -11,6 +11,7 @@
 #include <functional>
 #include <random>
 #include <memory>
+#include <chrono>
 #include <cassert>
 #define repeat(i,n) for (int i = 0; (i) < (n); ++(i))
 #define repeat_from(i,m,n) for (int i = (m); (i) < (n); ++(i))
@@ -419,6 +420,7 @@ struct photon_t {
     int score;
     int obstacles; // smaller is better
     double evaluated_value;
+    double permanent_bonus;
     output_t output;
 };
 bool operator < (photon_t const & a, photon_t const & b) {
@@ -433,12 +435,14 @@ photon_t initial_photon(input_t const & input, int last_score) {
     pho.score = last_score;
     pho.obstacles = input.self_obstacles - input.opponent_obstacles;
     pho.output = make_output(0xdeadbeef, 0);
+    pho.evaluated_value = 0;
+    pho.permanent_bonus = 0;
     return pho;
 }
-double evaluate_photon(photon_t const & pho, simulate_result_t const & result, simulate_result_t const & estimated) {
+double evaluate_photon(photon_t & pho, simulate_result_t const & result, simulate_result_t const & estimated, state_summary_t const & oppo_sum) {
     double acc = 0;
     acc += pho.score; // scoreを基準に
-    acc += estimated.chain * 10;
+    acc += estimated.chain * 40; // 大連鎖だと8*5なんて誤差、小連鎖でscoreを気にされると不利
     acc += (1 - 0.08 * pho.age) * estimated.score; // 不正確な値だけど比較可能だろうからよい
     acc -= 3 * max(0, min(160, pho.obstacles - 18));
     repeat (y, height) repeat (x, width) {
@@ -447,13 +451,18 @@ double evaluate_photon(photon_t const & pho, simulate_result_t const & result, s
             acc -= 4 + 0.1 * y + 0.4 * dx;
         }
     }
-    if (result.chain <= 2) acc -= 1.5 * result.score; // 手数で損
-    if (result.chain == 3) acc -= 1.0 * result.score;
-    if (result.chain == 4) acc -= 0.5 * result.score;
+    if (result.chain <= 2) acc -= 3.0 * result.score; // 手数で損
+    if (result.chain == 3) acc -= 2.0 * result.score;
+    if (result.chain == 4) acc -= 1.5 * result.score;
+    if (result.chain == 5) acc -= 1.0 * result.score;
+    if (max<int>(oppo_sum.best_result.score, oppo_sum.best_estimated.score * 0.8) + 60 * 5 < result.score) {
+        pho.permanent_bonus += 300; // 発火可能でしかも勝てるというのは大きい
+    }
+    acc += pho.permanent_bonus;
     return acc;
 }
 struct update_photon_exception {};
-photon_t update_photon(photon_t const & previous_pho, pack_t const & pack, output_t output) { // throws exceptions
+photon_t update_photon(photon_t const & previous_pho, pack_t const & pack, output_t output, state_summary_t const & oppo_sum) { // throws exceptions
     photon_t npho = previous_pho;
     npho.age += 1;
     int used_obstacles = max(0, min(9, npho.obstacles));
@@ -470,7 +479,7 @@ photon_t update_photon(photon_t const & previous_pho, pack_t const & pack, outpu
     npho.score += result.score;
     simulate_result_t estimated = estimate_chain(npho.field);
     npho.estimated_chain = estimated.chain;
-    npho.evaluated_value = evaluate_photon(npho, result, estimated);
+    npho.evaluated_value = evaluate_photon(npho, result, estimated, oppo_sum);
     if (previous_pho.age == 0) npho.output = output;
     return npho;
 }
@@ -565,7 +574,7 @@ public:
                 for (photon_t const & pho : beam) {
                     repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
                         try {
-                            photon_t npho = update_photon(pho, config.packs[input.current_turn + pho.age], make_output(x, r));
+                            photon_t npho = update_photon(pho, config.packs[input.current_turn + pho.age], make_output(x, r), oppo_sum);
                             npho.evaluated_value += random() * 0.1; // tiebreak
                             nbeam[npho.estimated_chain].push_back(npho);
                         } catch (update_photon_exception e) {
@@ -596,9 +605,9 @@ public:
                     if (age == beam_depth-1) {
                         simulate_result_t result = estimate_chain(pho.field);
                         cerr << "beam " << age << " width: " << beam.size() << endl;
-                        cerr << "    score: " << pho.score << endl;
-                        cerr << "    estimated chain: " << result.chain << endl;
-                        cerr << "    estimated score: " << result.score << endl;
+                        cerr << "    evaluated: " << pho.evaluated_value << endl;
+                        cerr << "    chain: + " << result.chain << endl;
+                        cerr << "    score: " << pho.score << " + " << result.score << endl;
                     }
                 }
             }
