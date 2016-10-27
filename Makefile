@@ -35,9 +35,12 @@ log/update:
 	touch ${logfile}
 	cat ${logfile} ${tmplogfile} | sort | uniq | sponge ${logfile}
 
+optionfile := codevsforstudent/settings/option.txt
+onlinename := $(shell [ -e ${optionfile} ] && cat ${optionfile} | grep onlineName | cut -d= -f2)
+
 userfile := codevsforstudent/user.json
 tmpuserfile := codevsforstudent/user.json.$(shell date +%s)
 ranking:
-	cat ${userfile} | tail -n 5000 | jq -r '.[] | ( .name, .rating )' | while read user ; do read rating ; win=$$($(MAKE) log | grep kimiyuki_win- | grep $${user}_lose- | wc -l) ; lose=$$($(MAKE) log | grep kimiyuki_lose- | grep $${user}_win- | wc -l) ; echo $$user'\t'$$win-$$lose'\t'$$rating | expand -t 20 ; done
+	cat ${userfile} | tail -n 5000 | jq -r '.[] | ( .name, .rating )' | while read user ; do read rating ; win=$$($(MAKE) log | grep ${onlinename}_win- | grep $${user}_lose- | wc -l) ; lose=$$($(MAKE) log | grep ${onlinename}_lose- | grep $${user}_win- | wc -l) ; echo $$user'\t'$$win-$$lose'\t'$$rating | expand -t 20 ; done
 ranking/update:
 	curl 'http://52.198.238.77/codevsforstudent/user?course=Hard' > ${userfile}
