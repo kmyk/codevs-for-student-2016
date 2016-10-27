@@ -25,3 +25,12 @@ build/fast/profile-use:
 
 client:
 	javaws codevs_for_student.jnlp &
+
+logfile := codevsforstudent/log/index.txt
+tmplogfile := codevsforstudent/log/index.txt.$(shell date +%s)
+log:
+	cat ${logfile}
+log/update:
+	curl http://52.198.238.77/codevsforstudent/log/ | pandoc -f html -t plain | sed 's/^ \+//' >> ${tmplogfile}
+	touch ${logfile}
+	cat ${logfile} ${tmplogfile} | sort | uniq | sponge ${logfile}
