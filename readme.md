@@ -6,7 +6,8 @@
 
 便利なリンク:
 
--   ランキング: <http://52.198.238.77/codevsforstudent>
+-   ランキング(人間用): <http://52.198.238.77/codevsforstudent>
+-   ランキング: <http://52.198.238.77/codevsforstudent/user?course=Hard>
 -   オンライン履歴: <http://52.198.238.77/codevsforstudent/log/>
 
 危ないので触らない方がよさそうなサービス:

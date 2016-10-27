@@ -26,11 +26,18 @@ build/fast/profile-use:
 client:
 	javaws codevs_for_student.jnlp &
 
-logfile := codevsforstudent/log/index.txt
-tmplogfile := codevsforstudent/log/index.txt.$(shell date +%s)
+logfile := codevsforstudent/log.txt
+tmplogfile := codevsforstudent/log.txt.$(shell date +%s)
 log:
 	cat ${logfile}
 log/update:
 	curl http://52.198.238.77/codevsforstudent/log/ | pandoc -f html -t plain | sed 's/^ \+//' >> ${tmplogfile}
 	touch ${logfile}
 	cat ${logfile} ${tmplogfile} | sort | uniq | sponge ${logfile}
+
+userfile := codevsforstudent/user.json
+tmpuserfile := codevsforstudent/user.json.$(shell date +%s)
+ranking:
+	cat ${userfile} | tail -n 5000 | jq -r '.[] | ( .name, .rating )' | while read user ; do read rating ; win=$$($(MAKE) log | grep kimiyuki_win- | grep $${user}_lose- | wc -l) ; lose=$$($(MAKE) log | grep kimiyuki_lose- | grep $${user}_win- | wc -l) ; echo $$user'\t'$$win-$$lose'\t'$$rating | expand -t 20 ; done
+ranking/update:
+	curl 'http://52.198.238.77/codevsforstudent/user?course=Hard' > ${userfile}
