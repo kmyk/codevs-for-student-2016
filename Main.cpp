@@ -362,7 +362,7 @@ pair<simulate_result_t, field_t> simulate_with_output(field_t const & field, pac
     return { result, nfield };
 }
 
-simulate_result_t estimate_chain(field_t const & field) {
+simulate_result_t estimate_with_erasing(field_t const & field) {
     const array<int,width> height_map = make_height_map(field);
     simulate_result_t acc = { -1, 0 };
     repeat (x, width) {
@@ -387,6 +387,24 @@ simulate_result_t estimate_chain(field_t const & field) {
     return acc;
 }
 
+simulate_result_t estimate_with_drop(field_t const & field) {
+    const array<int,width> height_map = make_height_map(field);
+    simulate_result_t acc = { -1, 0 };
+    repeat (x, width) {
+        repeat_from (b,1,9+1) {
+            blocks_t<height + 1, width> nfield = {};
+            repeat (nx, width) repeat (y, height_map[nx]) nfield.at[nx][y] = field.at[nx][y];
+            nfield.at[x][height_map[x]] = b;
+            array<int,width> nheight_map = height_map;
+            nheight_map[x] += 1;
+            vector<point_t> modified_blocks { point(height_map[x], x) };
+            simulate_result_t result = simulate(nfield, nheight_map, modified_blocks, 0);
+            setmax(acc, result);
+        }
+    }
+    return acc;
+}
+
 const int summary_depth = 12;
 struct state_summary_t {
     int base_turn;
@@ -399,7 +417,7 @@ struct state_summary_t {
 state_summary_t summarize_state(config_t const & config, int current_turn, field_t const & field, int a_obstacles) {
     state_summary_t info = {};
     info.base_turn = current_turn;
-    info.estimated[0] = estimate_chain(field);
+    info.estimated[0] = estimate_with_erasing(field);
     int obstacles = a_obstacles;
     repeat (age, summary_depth) {
         if (current_turn + age >= config.packs.size()) break;
@@ -415,7 +433,7 @@ state_summary_t summarize_state(config_t const & config, int current_turn, field
                 continue;
             }
             setmax(info.result[age], result);
-            setmax(info.estimated[age], estimate_chain(nfield));
+            setmax(info.estimated[age], estimate_with_erasing(nfield));
         }
     }
     info.best_result   [summary_depth  -1] = info.result   [summary_depth  -1];
@@ -530,7 +548,7 @@ photon_t update_photon(photon_t const & previous_pho, pack_t const & pack, outpu
     }
     npho.obstacles -= count_obstacles_from_delta(npho.score, result.score);
     npho.score += result.score;
-    if (not est_memo.count(npho.ptr)) est_memo[npho.ptr] = estimate_chain(*npho.ptr.field);
+    if (not est_memo.count(npho.ptr)) est_memo[npho.ptr] = estimate_with_erasing(*npho.ptr.field);
     simulate_result_t estimated = est_memo[npho.ptr];
     npho.estimated_chain = estimated.chain;
     npho.evaluated_value = evaluate_photon(npho, result, estimated, oppo_sum);
@@ -585,8 +603,8 @@ public:
         cerr << "remaining time: " << input.remaining_time << endl;
         if (not scores.empty()) cerr << "score: " << scores.back() << endl;
         cerr << "obstacles: " << input.self_obstacles - input.opponent_obstacles << endl;
-        cerr << "self estimated chain: " << estimate_chain(input.self_field).chain << endl;
-        cerr << "opp. estimated chain: " << estimate_chain(input.opponent_field).chain << endl;
+        cerr << "self estimated chain: " << estimate_with_erasing(input.self_field).chain << endl;
+        cerr << "opp. estimated chain: " << estimate_with_erasing(input.opponent_field).chain << endl;
 
         // check
         if (not inputs.empty()) {
@@ -628,7 +646,7 @@ public:
 
         // estimation
         int estimated_chain = 0; {
-            simulate_result_t estimated = estimate_chain(input.self_field);
+            simulate_result_t estimated = estimate_with_erasing(input.self_field);
             estimated_chain += estimated.chain;
             if (turn > 0) estimated_chain = ceil((estimated_chain * 2 + estimated_history.back().chain) / 3.0); // ならす
             estimated_history.push_back(estimated); // scopeを切ったのでその場で追加までする
@@ -722,7 +740,7 @@ public:
                     photon_t & pho = *whole(max_element, beam);
                     output = pho.output;
                     if (age == beam_depth-1) {
-                        simulate_result_t result = estimate_chain(*pho.ptr.field);
+                        simulate_result_t result = estimate_with_erasing(*pho.ptr.field);
                         cerr << "beam " << age << " width: " << beam.size() << endl;
                         cerr << "    evaluated: " << pho.evaluated_value << endl;
                         cerr << "    chain: + " << result.chain << endl;
