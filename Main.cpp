@@ -151,6 +151,12 @@ pack_t fill_obstacles(pack_t a, int obstacles) {
     return a;
 }
 
+int count_empty_blocks(pack_t const & a) {
+    int cnt = 0;
+    repeat (x, pack_size) repeat (y, pack_size) if (a.at[x][y] == empty_block) ++ cnt;
+    return cnt;
+}
+
 const int chain_coefficient[] = {
     0,
     1, // 1
@@ -501,7 +507,7 @@ photon_t update_photon(photon_t const & previous_pho, pack_t const & pack, outpu
         map<field_ptr_t, simulate_result_t> & est_memo) { // throws exceptions
     photon_t npho = previous_pho;
     npho.age += 1;
-    int used_obstacles = max(0, min(9, npho.obstacles));
+    int used_obstacles = max(0, min(count_empty_blocks(pack), npho.obstacles));
     npho.obstacles -= used_obstacles;
     simulate_result_t result;
     auto sim_key = make_tuple(npho.ptr, used_obstacles, output);
@@ -561,14 +567,15 @@ public:
     }
     output_t think(input_t const & input) {
         // prepare
+        int turn = input.current_turn;
         field_t const & field = input.self_field;
-        pack_t const & pack = config.packs[input.current_turn];
+        pack_t const & pack = config.packs[turn];
         pack_t const & filled_pack = fill_obstacles(pack, input.self_obstacles);
         const int last_score = scores.empty() ? 0 : scores.back();
 
         // logging
         cerr << endl;
-        cerr << "turn: " << input.current_turn << endl;
+        cerr << "turn: " << turn << endl;
         cerr << "remaining time: " << input.remaining_time << endl;
         if (not scores.empty()) cerr << "score: " << scores.back() << endl;
         cerr << "obstacles: " << input.self_obstacles - input.opponent_obstacles << endl;
@@ -593,7 +600,7 @@ public:
         output_t output = make_output(0xdeadbeef, 0);
 
         // look at opponent
-        const state_summary_t oppo_sum = summarize_state(config, input.current_turn, input.opponent_field, input.opponent_obstacles); {
+        const state_summary_t oppo_sum = summarize_state(config, turn, input.opponent_field, input.opponent_obstacles); {
             int best_score = 0;
             repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
                 simulate_result_t result;
@@ -620,19 +627,40 @@ public:
             input.remaining_time < 30 * 1000 ? 160 :
             input.remaining_time < 40 * 1000 ? 200 :
             250;
-        sim_memo[(input.current_turn + beam_depth - 1) % beam_depth].clear();
-        est_memo[(input.current_turn + beam_depth - 1) % beam_depth].clear();
+        auto memo_ix_at = [&](int age) { return (turn + age) % beam_depth; };
+        sim_memo[memo_ix_at(beam_depth - 1)].clear();
+        est_memo[memo_ix_at(beam_depth - 1)].clear();
+        if (turn > 0) {
+            input_t const & last = inputs.back();
+            int estimated_obstacles = max(0, last.self_obstacles - count_empty_blocks(config.packs[turn-1]));
+            if (estimated_obstacles < input.self_obstacles) {
+                int actual_obstacles = input.self_obstacles;
+                bool diff = false;
+                repeat (age, beam_depth-1) {
+                    if (config.packs.size() <= turn + age) break;
+                    int de = max(0, min(count_empty_blocks(config.packs[turn + age]), estimated_obstacles));
+                    int da = max(0, min(count_empty_blocks(config.packs[turn + age]), actual_obstacles));
+                    if (de != da) diff = true;
+                    estimated_obstacles -= de;
+                    actual_obstacles    -= da;
+                    if (diff) {
+                        sim_memo[memo_ix_at(age)].clear();
+                        est_memo[memo_ix_at(age)].clear();
+                    }
+                }
+            }
+        }
         if (output.x == 0xdeadbeef) {
             vector<photon_t> beam;
             array<vector<photon_t>, beam_chain_max> nbeam = {};
             beam.push_back(initial_photon(input, last_score));
             repeat (age, beam_depth) {
-                int memo_ix = (input.current_turn + age) % beam_depth;
-                if (input.current_turn + age >= config.packs.size()) break; // game ends
+                int memo_ix = memo_ix_at(age);
+                if (turn + age >= config.packs.size()) break; // game ends
                 for (photon_t const & pho : beam) {
                     repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
                         try {
-                            photon_t npho = update_photon(pho, config.packs[input.current_turn + pho.age], make_output(x, r), oppo_sum, sim_memo[memo_ix], est_memo[memo_ix]);
+                            photon_t npho = update_photon(pho, config.packs[turn + pho.age], make_output(x, r), oppo_sum, sim_memo[memo_ix], est_memo[memo_ix]);
                             npho.evaluated_value += random() * 0.1; // tiebreak
                             nbeam[npho.estimated_chain].push_back(npho);
                         } catch (update_photon_exception e) {
