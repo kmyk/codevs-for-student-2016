@@ -12,6 +12,7 @@
 #include <random>
 #include <memory>
 #include <chrono>
+#include <cmath>
 #include <cassert>
 #define repeat(i,n) for (int i = 0; (i) < (n); ++(i))
 #define repeat_from(i,m,n) for (int i = (m); (i) < (n); ++(i))
@@ -386,14 +387,14 @@ simulate_result_t estimate_chain(field_t const & field) {
     return acc;
 }
 
-const int summary_depth = 8;
+const int summary_depth = 12;
 struct state_summary_t {
     int base_turn;
     // そのターンのパックのみを落として検査する
     simulate_result_t result[summary_depth];
     simulate_result_t estimated[summary_depth + 1];
-    simulate_result_t best_result;
-    simulate_result_t best_estimated;
+    simulate_result_t best_result[summary_depth]; // そのターン以降で
+    simulate_result_t best_estimated[summary_depth + 1];
 };
 state_summary_t summarize_state(config_t const & config, int current_turn, field_t const & field, int a_obstacles) {
     state_summary_t info = {};
@@ -417,8 +418,10 @@ state_summary_t summarize_state(config_t const & config, int current_turn, field
             setmax(info.estimated[age], estimate_chain(nfield));
         }
     }
-    repeat (age, summary_depth) setmax(info.best_result, info.result[age]);
-    repeat (age, summary_depth + 1) setmax(info.best_estimated, info.estimated[age]);
+    info.best_result   [summary_depth  -1] = info.result   [summary_depth  -1];
+    info.best_estimated[summary_depth+1-1] = info.estimated[summary_depth+1-1];
+    repeat_reverse (age, summary_depth   - 1) info.best_result   [age] = max(info.best_result   [age+1], info.result   [age]);
+    repeat_reverse (age, summary_depth+1 - 1) info.best_estimated[age] = max(info.best_estimated[age+1], info.estimated[age]);
     return info;
 }
 
@@ -480,20 +483,21 @@ photon_t initial_photon(input_t const & input, int last_score) {
 double evaluate_photon(photon_t & pho, simulate_result_t const & result, simulate_result_t const & estimated, state_summary_t const & oppo_sum) {
     double acc = 0;
     acc += pho.score; // scoreを基準に
-    acc += estimated.chain * 40; // 大連鎖だと8*5なんて誤差、小連鎖でscoreを気にされると不利
+    acc += estimated.chain * 20; // 大連鎖だと4*5なんて誤差、小連鎖でscoreを気にされると不利
     acc += (1 - 0.08 * pho.age) * estimated.score; // 不正確な値だけど比較可能だろうからよい
     acc -= 3 * max(0, min(160, pho.obstacles - 18));
     repeat (x, width) repeat (y, height) {
         int dx = min(x, width-x-1);
         if (pho.ptr.field->at[x][y] == obstacle_block) {
-            acc -= 5 + 2 * y + 3 * dx;
+            acc -= 3 + 0.3 * y + 1.2 * dx; // 端に寄せた方がいいけど、あまりそればかり気にされても困る
         }
     }
     if (result.chain <= 2) acc -= 3.0 * result.score; // 手数で損
     if (result.chain == 3) acc -= 2.0 * result.score;
     if (result.chain == 4) acc -= 1.5 * result.score;
     if (result.chain == 5) acc -= 1.0 * result.score;
-    if (max<int>(oppo_sum.best_result.score, oppo_sum.best_estimated.score * 0.8) + 60 * 5 < result.score) {
+    assert (4 < summary_depth);
+    if (max<int>(oppo_sum.best_result[min(4, pho.age)].score, oppo_sum.best_estimated[min(4, pho.age)].score * 0.8) + 60 * 5 < 1.2 * result.score) {
         pho.permanent_bonus += 300; // 発火可能でしかも勝てるというのは大きい
     }
     acc += pho.permanent_bonus;
@@ -506,7 +510,6 @@ photon_t update_photon(photon_t const & previous_pho, pack_t const & pack, outpu
         map<tuple<field_ptr_t, int, output_t>, pair<simulate_result_t, field_ptr_t> > & sim_memo,
         map<field_ptr_t, simulate_result_t> & est_memo) { // throws exceptions
     photon_t npho = previous_pho;
-    npho.age += 1;
     int used_obstacles = max(0, min(count_empty_blocks(pack), npho.obstacles));
     npho.obstacles -= used_obstacles;
     simulate_result_t result;
@@ -531,7 +534,8 @@ photon_t update_photon(photon_t const & previous_pho, pack_t const & pack, outpu
     simulate_result_t estimated = est_memo[npho.ptr];
     npho.estimated_chain = estimated.chain;
     npho.evaluated_value = evaluate_photon(npho, result, estimated, oppo_sum);
-    if (previous_pho.age == 0) npho.output = output;
+    if (npho.age == 0) npho.output = output;
+    npho.age += 1;
     return npho;
 }
 
@@ -555,10 +559,12 @@ private:
 
 private:
     static const int beam_small_width = 3;
-    static const int beam_depth = 8;
-    static const int beam_chain_max = 36;
-    array<map<tuple<field_ptr_t, int, output_t>, pair<simulate_result_t, field_ptr_t> >, beam_depth> sim_memo;
-    array<map<field_ptr_t, simulate_result_t>, beam_depth> est_memo;
+    static const int beam_chain_max = 40;
+    static const int beam_depth_max = 12;
+    static constexpr double beam_output_limit_rate = 0.3;
+    array<map<tuple<field_ptr_t, int, output_t>, pair<simulate_result_t, field_ptr_t> >, beam_depth_max> sim_memo;
+    array<map<field_ptr_t, simulate_result_t>, beam_depth_max> est_memo;
+    vector<simulate_result_t> estimated_history;
 
 public:
     AI(config_t const & a_config) {
@@ -611,7 +617,7 @@ public:
                 } catch (simulate_gameover_exception e) {
                     continue;
                 }
-                if (max<int>(oppo_sum.best_result.score, oppo_sum.best_estimated.score * 0.8) + 60 * 5 < result.score) {
+                if (max<int>(oppo_sum.best_result[0].score, oppo_sum.best_estimated[0].score * 0.8) + 60 * 5 < 1.2 * result.score) {
                     if (best_score < result.score) {
                         best_score = result.score;
                         output = make_output(x, r);
@@ -620,14 +626,34 @@ public:
             }
         }
 
+        // estimation
+        int estimated_chain = 0; {
+            simulate_result_t estimated = estimate_chain(input.self_field);
+            estimated_chain += estimated.chain;
+            if (turn > 0) estimated_chain = ceil((estimated_chain * 2 + estimated_history.back().chain) / 3.0); // ならす
+            estimated_history.push_back(estimated); // scopeを切ったのでその場で追加までする
+        }
+
         // beam search
         int beam_width =
-            input.remaining_time < 10 * 1000 ?  60 :
-            input.remaining_time < 20 * 1000 ? 100 :
-            input.remaining_time < 30 * 1000 ? 160 :
-            input.remaining_time < 40 * 1000 ? 200 :
+            input.remaining_time < 20 * 1000 ?  30 :
+            input.remaining_time < 30 * 1000 ?  80 :
+            input.remaining_time < 40 * 1000 ? 160 :
+            input.remaining_time < 50 * 1000 ? 180 :
+            input.remaining_time < 60 * 1000 ? 200 :
             250;
-        auto memo_ix_at = [&](int age) { return (turn + age) % beam_depth; };
+        int beam_depth =
+            estimated_chain <  4 ? 12 :
+            estimated_chain <  6 ? 10 :
+            estimated_chain <  8 ? 9 :
+            8;
+        beam_depth = round(beam_depth * (
+            input.remaining_time < 20 * 1000 ? 0.7 :
+            input.remaining_time < 40 * 1000 ? 0.8 :
+            input.remaining_time < 60 * 1000 ? 0.9 :
+            1.0));
+        assert (beam_depth <= beam_depth_max);
+        auto memo_ix_at = [&](int age) { return (turn + age) % beam_depth_max; };
         sim_memo[memo_ix_at(beam_depth - 1)].clear();
         est_memo[memo_ix_at(beam_depth - 1)].clear();
         if (turn > 0) {
@@ -679,11 +705,18 @@ public:
                     repeat (j,w) beam.push_back(nbeam[i][ix2[j]]);
                     repeat_from (j,w,min<int>(beam_width,nbeam[i].size())) ix1.emplace_back(i, ix2[j]);
                 }
-                int w = min<int>(beam_width - beam.size(), ix1.size());
-                partial_sort(ix1.begin(), ix1.begin() + w, ix1.end(), [&](pair<int,int> i, pair<int,int> j) {
+                int w = max(0, min<int>(beam_width - beam.size(), ix1.size()));
+                whole(sort, ix1, [&](pair<int,int> i, pair<int,int> j) {
                     return nbeam[j.first][j.second] < nbeam[i.first][i.second]; // reversed
                 });
-                repeat (i,w) beam.push_back(nbeam[ix1[i].first][ix1[i].second]);
+                map<output_t, int> cnt;
+                repeat (i,w) {
+                    photon_t const & pho = nbeam[ix1[i].first][ix1[i].second];
+                    if (cnt[pho.output] < w * beam_output_limit_rate) {
+                        cnt[pho.output] += 1;
+                        beam.push_back(pho);
+                    }
+                }
                 repeat (i,nbeam.size()) nbeam[i].clear();
                 if (not beam.empty()) {
                     photon_t & pho = *whole(max_element, beam);
