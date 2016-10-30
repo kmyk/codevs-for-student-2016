@@ -505,9 +505,6 @@ photon_t initial_photon(input_t const & input, int last_score) {
 const int chain_of_fire = 6; // 発火したとみなすべき連鎖数 (inclusive)
 double evaluate_photon_permanent_bonus(photon_t const & pho, simulate_result_t const & result, simulate_result_t const & estimated, state_summary_t const & oppo_sum, photon_t const & previous_pho) {
     double acc = 0;
-    if (result.chain >= chain_of_fire and result.chain == previous_pho.best_estimated_chain - 1) acc -= 100;
-    if (result.chain >= chain_of_fire and result.chain == previous_pho.best_estimated_chain - 2) acc -= 200;
-    if (result.chain >= chain_of_fire and result.chain <= previous_pho.best_estimated_chain - 3) acc -= 300;
     if (pho.effective_fired and not previous_pho.effective_fired) {
         acc += 300 + 0.2 * result.score; // 発火可能でしかも勝てるというのは大きい
     }
