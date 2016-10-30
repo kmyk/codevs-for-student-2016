@@ -508,6 +508,9 @@ double evaluate_photon_permanent_bonus(photon_t const & pho, simulate_result_t c
     if (result.chain >= chain_of_fire and result.chain == previous_pho.best_estimated_chain - 1) acc -= 100;
     if (result.chain >= chain_of_fire and result.chain == previous_pho.best_estimated_chain - 2) acc -= 200;
     if (result.chain >= chain_of_fire and result.chain <= previous_pho.best_estimated_chain - 3) acc -= 300;
+    if (pho.effective_fired and not previous_pho.effective_fired) {
+        acc += 300 + 0.2 * result.score; // 発火可能でしかも勝てるというのは大きい
+    }
     return acc; // 差分
 }
 double evaluate_photon(photon_t const & pho, simulate_result_t const & result, simulate_result_t const & estimated, state_summary_t const & oppo_sum, photon_t const & previous_pho) {
@@ -526,7 +529,6 @@ double evaluate_photon(photon_t const & pho, simulate_result_t const & result, s
     if (result.chain == 3) acc -= 2.0 * result.score;
     if (result.chain == 4) acc -= 1.5 * result.score;
     if (result.chain == 5) acc -= 1.0 * result.score;
-    if (pho.effective_fired) acc += 300; // 発火可能でしかも勝てるというのは大きい
     return acc + pho.permanent_bonus;
 }
 bool is_effective_firing(int score, int obstacles, int age, state_summary_t const & oppo_sum) {
