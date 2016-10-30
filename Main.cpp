@@ -475,8 +475,10 @@ struct photon_t {
     int age;
     field_ptr_t ptr;
     int estimated_chain;
+    int best_estimated_chain;
     int score;
     int obstacles; // smaller is better
+    bool effective_fired;
     double evaluated_value;
     double permanent_bonus;
     output_t output;
@@ -490,20 +492,30 @@ photon_t initial_photon(input_t const & input, int last_score) {
     pho.age = 0;
     pho.ptr = new_field_ptr(input.self_field);
     pho.estimated_chain = -1;
+    pho.best_estimated_chain = -1;
     pho.score = last_score;
     pho.obstacles = input.self_obstacles - input.opponent_obstacles;
+    pho.effective_fired = false;
     pho.output = make_output(0xdeadbeef, 0);
     pho.evaluated_value = 0;
     pho.permanent_bonus = 0;
     return pho;
 }
 
-double evaluate_photon(photon_t & pho, simulate_result_t const & result, simulate_result_t const & estimated, state_summary_t const & oppo_sum) {
+const int chain_of_fire = 6; // 発火したとみなすべき連鎖数 (inclusive)
+double evaluate_photon_permanent_bonus(photon_t const & pho, simulate_result_t const & result, simulate_result_t const & estimated, state_summary_t const & oppo_sum, photon_t const & previous_pho) {
+    double acc = 0;
+    if (result.chain >= chain_of_fire and result.chain == previous_pho.best_estimated_chain - 1) acc -= 100;
+    if (result.chain >= chain_of_fire and result.chain == previous_pho.best_estimated_chain - 2) acc -= 200;
+    if (result.chain >= chain_of_fire and result.chain <= previous_pho.best_estimated_chain - 3) acc -= 300;
+    return acc; // 差分
+}
+double evaluate_photon(photon_t const & pho, simulate_result_t const & result, simulate_result_t const & estimated, state_summary_t const & oppo_sum, photon_t const & previous_pho) {
     double acc = 0;
     acc += pho.score; // scoreを基準に
     acc += estimated.chain * 20; // 大連鎖だと4*5なんて誤差、小連鎖でscoreを気にされると不利
     acc += (1 - 0.08 * pho.age) * estimated.score; // 不正確な値だけど比較可能だろうからよい
-    acc -= 3 * max(0, min(160, pho.obstacles - 18));
+    acc -= 3 * max(0, min(160, pho.obstacles - estimated.score / 6));
     repeat (x, width) repeat (y, height) {
         int dx = min(x, width-x-1);
         if (pho.ptr.field->at[x][y] == obstacle_block) {
@@ -514,12 +526,13 @@ double evaluate_photon(photon_t & pho, simulate_result_t const & result, simulat
     if (result.chain == 3) acc -= 2.0 * result.score;
     if (result.chain == 4) acc -= 1.5 * result.score;
     if (result.chain == 5) acc -= 1.0 * result.score;
+    if (pho.effective_fired) acc += 300; // 発火可能でしかも勝てるというのは大きい
+    return acc + pho.permanent_bonus;
+}
+bool is_effective_firing(int score, int obstacles, int age, state_summary_t const & oppo_sum) {
     assert (4 < summary_depth);
-    if (max<int>(oppo_sum.best_result[min(4, pho.age)].score, oppo_sum.best_estimated[min(4, pho.age)].score * 0.8) + 60 * 5 < 1.2 * result.score) {
-        pho.permanent_bonus += 300; // 発火可能でしかも勝てるというのは大きい
-    }
-    acc += pho.permanent_bonus;
-    return acc;
+    int i = min(4, age);
+    return max<int>(oppo_sum.best_result[i].score, oppo_sum.best_estimated[i].score * 0.8) + max(obstacles + 20, 60) * 5 < 1.2 * score;
 }
 
 struct update_photon_exception {};
@@ -551,7 +564,11 @@ photon_t update_photon(photon_t const & previous_pho, pack_t const & pack, outpu
     if (not est_memo.count(npho.ptr)) est_memo[npho.ptr] = estimate_with_erasing(*npho.ptr.field);
     simulate_result_t estimated = est_memo[npho.ptr];
     npho.estimated_chain = estimated.chain;
-    npho.evaluated_value = evaluate_photon(npho, result, estimated, oppo_sum);
+    if (is_effective_firing(result.score, previous_pho.obstacles, npho.age, oppo_sum)) npho.effective_fired = true;
+    if (result.chain >= chain_of_fire) npho.best_estimated_chain = -1; // 発火したら初期化
+    setmax(npho.best_estimated_chain, estimated.chain);
+    npho.evaluated_value += evaluate_photon_permanent_bonus(npho, result, estimated, oppo_sum, previous_pho);
+    npho.evaluated_value = evaluate_photon(npho, result, estimated, oppo_sum, previous_pho);
     if (npho.age == 0) npho.output = output;
     npho.age += 1;
     return npho;
@@ -563,6 +580,7 @@ private:
     vector<input_t> inputs;
     vector<output_t> outputs;
     vector<int> scores;
+    vector<simulate_result_t> results;
 
 private:
     default_random_engine engine;
@@ -635,7 +653,7 @@ public:
                 } catch (simulate_gameover_exception e) {
                     continue;
                 }
-                if (max<int>(oppo_sum.best_result[0].score, oppo_sum.best_estimated[0].score * 0.8) + 60 * 5 < 1.2 * result.score) {
+                if (is_effective_firing(result.score, input.self_obstacles, 0, oppo_sum)) {
                     if (best_score < result.score) {
                         best_score = result.score;
                         output = make_output(x, r);
@@ -647,8 +665,12 @@ public:
         // estimation
         int estimated_chain = 0; {
             simulate_result_t estimated = estimate_with_erasing(input.self_field);
-            estimated_chain += estimated.chain;
-            if (turn > 0) estimated_chain = ceil((estimated_chain * 2 + estimated_history.back().chain) / 3.0); // ならす
+            setmax(estimated_chain, estimated.chain);
+            repeat_from (i,1,6) {
+                if (turn-i <= 0) break;
+                if (results[turn-i].chain >= chain_of_fire) break;
+                setmax(estimated_chain, estimated_history[turn-i].chain);
+            }
             estimated_history.push_back(estimated); // scopeを切ったのでその場で追加までする
         }
 
@@ -698,6 +720,7 @@ public:
             vector<photon_t> beam;
             array<vector<photon_t>, beam_chain_max> nbeam = {};
             beam.push_back(initial_photon(input, last_score));
+            beam.back().best_estimated_chain = estimated_chain;
             repeat (age, beam_depth) {
                 int memo_ix = memo_ix_at(age);
                 if (turn + age >= config.packs.size()) break; // game ends
@@ -767,7 +790,8 @@ public:
         } else {
             inputs.push_back(input);
             outputs.push_back(output);
-            scores.push_back(last_score + simulate_with_output(field, filled_pack, output).first.score);
+            results.push_back(simulate_with_output(field, filled_pack, output).first);
+            scores.push_back(last_score + results.back().score);
         }
         return output;
     }
