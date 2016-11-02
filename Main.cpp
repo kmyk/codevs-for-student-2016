@@ -103,7 +103,7 @@ namespace primitive {
     }
 
     struct input_t {
-        int current_turn;
+        int turn;
         int remaining_time; // in msec
         int self_obstacles;
         field_t self_field;
@@ -111,7 +111,7 @@ namespace primitive {
         field_t opponent_field;
     };
     istream & operator >> (istream & in, input_t & a) {
-        in >> a.current_turn >> a.remaining_time;
+        in >> a.turn >> a.remaining_time;
         in >>     a.self_obstacles >>     a.self_field;
         in >> a.opponent_obstacles >> a.opponent_field;
         assert (a.self_obstacles == 0 or a.opponent_obstacles == 0);
@@ -125,11 +125,14 @@ namespace primitive {
     };
     ostream & operator << (ostream & out, output_t const & a) { return out << a.x << ' ' << a.rotate; }
     output_t make_output(int x, rotate_t rotate) { return { x, rotate }; }
-    bool operator < (output_t const & a, output_t const & b) { return make_pair(a.x, a.rotate) < make_pair(b.x, b.rotate); }
+    bool operator  < (output_t const & a, output_t const & b) { return make_pair(a.x, a.rotate)  < make_pair(b.x, b.rotate); }
+    bool operator == (output_t const & a, output_t const & b) { return make_pair(a.x, a.rotate) == make_pair(b.x, b.rotate); }
+    const output_t invalid_output = { (int)0xdeadbeef, -1 }; // 簡単のため範囲を拡張
 }
 using namespace primitive;
 
 pack_t rotate(pack_t a, rotate_t r) {
+    assert (pack_size == 3);
     pack_t b;
     switch (r % 4 + (r < 0 ? 4 : 0)) {
         case 0: b = a; break;
@@ -156,6 +159,10 @@ int count_empty_blocks(pack_t const & a) {
     int cnt = 0;
     repeat (x, pack_size) repeat (y, pack_size) if (a.at[x][y] == empty_block) ++ cnt;
     return cnt;
+}
+
+int consumed_obstacles(pack_t const & pack, int obstacles) {
+    return max(0, min(count_empty_blocks(pack), obstacles));
 }
 
 const int chain_coefficient[] = {
@@ -443,134 +450,151 @@ state_summary_t summarize_state(config_t const & config, int current_turn, field
     return info;
 }
 
-struct field_ptr_t {
-    array<uint64_t,2> hash;
-    shared_ptr<field_t> field;
-};
-field_ptr_t new_field_ptr(field_t const & field) {
-    field_ptr_t ptr;
-    string s(height * width, '\0');
-    string t(height * width, '\0');
-    repeat (x, width) repeat (y, height) {
-        if (field.at[x][y] == empty_block) break;
-        s[x * width + y] = field.at[x][y];
-        t[x * width + y] = field.at[x][y] << 4;
-    }
-    ptr.hash[0] = hash<string>()(s);
-    ptr.hash[1] = hash<string>()(t);
-    ptr.field = make_shared<field_t>(field);
-    return ptr;
-}
-field_ptr_t null_field_ptr() {
-    field_ptr_t ptr = {};
-    return ptr;
-}
-bool operator < (field_ptr_t const & a, field_ptr_t const & b) {
-    if (a.hash != b.hash) return a.hash < b.hash; // 辞書順
-    if (a.field == b.field) return false;
-    return *a.field < *b.field;
-}
-
-struct photon_t {
-    int age;
-    field_ptr_t ptr;
-    int estimated_chain;
-    int best_estimated_chain;
-    int score;
-    int obstacles; // smaller is better
-    bool effective_fired;
-    double evaluated_value;
+struct evaluateion_info_t {
+    double score;
     double permanent_bonus;
-    output_t output;
+    bool is_effective_fired;
+    simulate_result_t estimated;
 };
-bool operator < (photon_t const & a, photon_t const & b) {
-    return a.evaluated_value < b.evaluated_value; // weak
-}
+struct photon_t {
+    int turn;
+    int score;
+    int obstacles; // 負なら相手に送る分 / 相手が発火したらここが変わり次以降の状態が消去される
+    field_t field;
+    output_t output; // この手に至る辺
+    simulate_result_t result; // その結果
+    evaluateion_info_t evaluation;
+    weak_ptr<photon_t> parent; // 逆辺
+    unique_ptr<array<array<shared_ptr<photon_t>, 4>, 12> > next; // 次状態への辺
+};
 
-photon_t initial_photon(input_t const & input, int last_score) {
-    photon_t pho;
-    pho.age = 0;
-    pho.ptr = new_field_ptr(input.self_field);
-    pho.estimated_chain = -1;
-    pho.best_estimated_chain = -1;
-    pho.score = last_score;
-    pho.obstacles = input.self_obstacles - input.opponent_obstacles;
-    pho.effective_fired = false;
-    pho.output = make_output(0xdeadbeef, 0);
-    pho.evaluated_value = 0;
-    pho.permanent_bonus = 0;
+shared_ptr<photon_t> initial_photon() {
+    shared_ptr<photon_t> pho = make_shared<photon_t>();
+    pho->turn = 0;
+    pho->score = 0;
+    pho->obstacles = 0;
+    pho->field = {};
+    pho->output = invalid_output;
+    pho->result = {};
+    pho->parent.reset();
+    pho->next = nullptr;
+    // evaluation
+    pho->evaluation.score = 0;
+    pho->evaluation.permanent_bonus = 0;
+    pho->evaluation.is_effective_fired = false;
+    pho->evaluation.estimated = {};
     return pho;
 }
 
-const int chain_of_fire = 6; // 発火したとみなすべき連鎖数 (inclusive)
-double evaluate_photon_permanent_bonus(photon_t const & pho, simulate_result_t const & result, simulate_result_t const & estimated, state_summary_t const & oppo_sum, photon_t const & previous_pho) {
-    double acc = 0;
-    if (pho.effective_fired and not previous_pho.effective_fired) {
-        acc += 300 + 0.2 * result.score; // 発火可能でしかも勝てるというのは大きい
+// 次のstepを(まだなら)作成 評価はまだしない
+void step_photon(shared_ptr<photon_t> const & pho, pack_t const & pack) {
+    if (pho->next) return;
+    int consumed = consumed_obstacles(pack, pho->obstacles);
+    pack_t filled_pack = fill_obstacles(pack, consumed);
+    pho->next = make_unique<array<array<shared_ptr<photon_t>, 4>, 12> >();
+    repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
+        shared_ptr<photon_t> npho = make_shared<photon_t>();
+        npho->output = make_output(x, r);
+        try {
+            tie(npho->result, npho->field) = simulate_with_output(pho->field, filled_pack, npho->output);
+        } catch (simulate_invalid_output_exception e) {
+            continue;
+        } catch (simulate_gameover_exception e) {
+            continue;
+        }
+        npho->turn = pho->turn + 1;
+        npho->score = pho->score + npho->result.score;
+        npho->obstacles = pho->obstacles - consumed - count_obstacles_from_delta(pho->score, npho->result.score);
+        npho->parent = pho;
+        (*pho->next)[x+pack_size-1][r] = npho;
+        // evaluation
+        npho->evaluation.score = 0;
+        npho->evaluation.permanent_bonus = 0;
+        npho->evaluation.is_effective_fired = false;
+        npho->evaluation.estimated = estimate_with_erasing(npho->field);
     }
-    return acc; // 差分
 }
-double evaluate_photon(photon_t const & pho, simulate_result_t const & result, simulate_result_t const & estimated, state_summary_t const & oppo_sum, photon_t const & previous_pho) {
-    double acc = 0;
-    acc += pho.score; // scoreを基準に
-    acc += estimated.chain * 20; // 大連鎖だと4*5なんて誤差、小連鎖でscoreを気にされると不利
-    acc += (1 - 0.08 * pho.age) * estimated.score; // 不正確な値だけど比較可能だろうからよい
-    acc -= 3 * max(0, min(160, pho.obstacles - estimated.score / 6));
-    repeat (x, width) repeat (y, height) {
-        int dx = min(x, width-x-1);
-        if (pho.ptr.field->at[x][y] == obstacle_block) {
-            acc -= 3 + 0.3 * y + 1.2 * dx; // 端に寄せた方がいいけど、あまりそればかり気にされても困る
+
+// 相手の発火でお邪魔が増えたとき
+void update_photon_obstacles(shared_ptr<photon_t> const & pho, int updated_obstacles, vector<pack_t> const & packs) {
+    if (pho->obstacles == updated_obstacles) {
+        // nop
+    } else if (not pho->next) {
+        pho->obstacles = updated_obstacles;
+    } else {
+        int         consumed = consumed_obstacles(packs[pho->turn],    pho->obstacles);
+        int updated_consumed = consumed_obstacles(packs[pho->turn], updated_obstacles);
+        pho->obstacles = updated_obstacles;
+        if (consumed != updated_consumed) {
+            pho->next = nullptr; // 開放
+        } else {
+            repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
+                shared_ptr<photon_t> npho = (*pho->next)[x+pack_size-1][r];
+                if (not npho) continue;
+                int next_obstacles = pho->obstacles - updated_consumed - count_obstacles_from_delta(pho->score, npho->result.score);
+                update_photon_obstacles(npho, next_obstacles, packs);
+            }
         }
     }
-    if (result.chain <= 2) acc -= 3.0 * result.score; // 手数で損
-    if (result.chain == 3) acc -= 2.0 * result.score;
-    if (result.chain == 4) acc -= 1.5 * result.score;
-    if (result.chain == 5) acc -= 1.0 * result.score;
-    return acc + pho.permanent_bonus;
 }
+
+const int chain_of_fire = 6; // 発火したとみなすべき連鎖数 (inclusive)
 bool is_effective_firing(int score, int obstacles, int age, state_summary_t const & oppo_sum) {
     assert (4 < summary_depth);
-    int i = min(4, age);
+    int i = min(4, age-1);
+    assert (i >= 0);
     return max<int>(oppo_sum.best_result[i].score, oppo_sum.best_estimated[i].score * 0.8) + max(obstacles + 20, 60) * 5 < 1.2 * score;
 }
 
-struct update_photon_exception {};
-const int memo_limit = 5;
-photon_t update_photon(photon_t const & previous_pho, pack_t const & pack, output_t output, state_summary_t const & oppo_sum,
-        map<tuple<field_ptr_t, int, output_t>, pair<simulate_result_t, field_ptr_t> > & sim_memo,
-        map<field_ptr_t, simulate_result_t> & est_memo) { // throws exceptions
-    photon_t npho = previous_pho;
-    int used_obstacles = max(0, min(count_empty_blocks(pack), npho.obstacles));
-    npho.obstacles -= used_obstacles;
-    simulate_result_t result;
-    auto sim_key = make_tuple(npho.ptr, used_obstacles, output);
-    if (sim_memo.count(sim_key)) {
-        tie(result, npho.ptr) = sim_memo[sim_key]; // errorなら登録されてない (いっそ落とした方が速い)
-    } else {
-        try {
-            field_t nfield;
-            tie(result, nfield) = simulate_with_output(*npho.ptr.field, fill_obstacles(pack, used_obstacles), output);
-            npho.ptr = new_field_ptr(nfield);
-            if (result.chain >= memo_limit) sim_memo[sim_key] = { result, npho.ptr };
-        } catch (simulate_invalid_output_exception e) {
-            throw update_photon_exception();
-        } catch (simulate_gameover_exception e) {
-            throw update_photon_exception();
+void evaluate_photon_init(shared_ptr<photon_t> const & pho) {
+    pho->evaluation.score = 0;
+    pho->evaluation.permanent_bonus = 0;
+    pho->evaluation.is_effective_fired = false;
+}
+
+// 相手の情報等を注入し評価する
+void evaluate_photon(shared_ptr<photon_t> const & pho, int base_turn, state_summary_t const & oppo_sum) {
+    int age = pho->turn - base_turn;
+    shared_ptr<photon_t> ppho = pho->parent.lock();
+    pho->evaluation.is_effective_fired = is_effective_firing(pho->result.score, pho->obstacles, age, oppo_sum);
+    {
+        double acc = 0;
+        if (age > 0) acc += ppho->evaluation.permanent_bonus; // 前のやつに足していく
+        if (pho->evaluation.is_effective_fired) {
+            acc += 300 + 0.2 * pho->result.score; // 発火した それが可能でしかも勝てるというのは大きい
         }
+        pho->evaluation.permanent_bonus = acc;
     }
-    npho.obstacles -= count_obstacles_from_delta(npho.score, result.score);
-    npho.score += result.score;
-    if (not est_memo.count(npho.ptr)) est_memo[npho.ptr] = estimate_with_erasing(*npho.ptr.field);
-    simulate_result_t estimated = est_memo[npho.ptr];
-    npho.estimated_chain = estimated.chain;
-    if (is_effective_firing(result.score, previous_pho.obstacles, npho.age, oppo_sum)) npho.effective_fired = true;
-    if (result.chain >= chain_of_fire) npho.best_estimated_chain = -1; // 発火したら初期化
-    setmax(npho.best_estimated_chain, estimated.chain);
-    npho.evaluated_value += evaluate_photon_permanent_bonus(npho, result, estimated, oppo_sum, previous_pho);
-    npho.evaluated_value = evaluate_photon(npho, result, estimated, oppo_sum, previous_pho);
-    if (npho.age == 0) npho.output = output;
-    npho.age += 1;
-    return npho;
+    {
+        double acc = 0;
+        acc += pho->score; // scoreを基準に
+        acc += pho->evaluation.estimated.chain * 20; // 大連鎖だと4*5なんて誤差、小連鎖でscoreを気にされると不利
+        acc += (1 - 0.08 * age) * pho->evaluation.estimated.score; // 不正確な値だけど比較可能だろうからよい
+        acc -= 3 * max(0, min(160, pho->obstacles - pho->evaluation.estimated.score / 6));
+        repeat (x, width) repeat (y, height) {
+            int dx = min(x, width-x-1);
+            if (pho->field.at[x][y] == obstacle_block) {
+                acc -= 3 + 0.3 * y + 1.2 * dx; // 端に寄せた方がいいけど、あまりそればかり気にされても困る
+            }
+        }
+        if (pho->result.chain <= 2) acc -= 3.0 * pho->result.score; // 手数で損
+        if (pho->result.chain == 3) acc -= 2.0 * pho->result.score;
+        if (pho->result.chain == 4) acc -= 1.5 * pho->result.score;
+        if (pho->result.chain == 5) acc -= 1.0 * pho->result.score;
+        pho->evaluation.score = acc + pho->evaluation.permanent_bonus;
+    }
+}
+
+output_t first_output_from(shared_ptr<photon_t> pho, int turn) {
+    while (pho->turn != turn+1) pho = pho->parent.lock();
+    return pho->output;
+}
+
+void prune_photon(shared_ptr<photon_t> const & pho, output_t output) {
+    repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
+        if (x == output.x and r == output.rotate) continue;
+        (*pho->next)[x+pack_size-1][r] = nullptr;
+    }
 }
 
 class AI {
@@ -594,39 +618,31 @@ private:
 
 private:
     static const int beam_small_width = 3;
-    static const int beam_chain_max = 40;
-    static const int beam_depth_max = 12;
+    static const int beam_chain_max = 32;
     static constexpr double beam_output_limit_rate = 0.3;
-    array<map<tuple<field_ptr_t, int, output_t>, pair<simulate_result_t, field_ptr_t> >, beam_depth_max> sim_memo;
-    array<map<field_ptr_t, simulate_result_t>, beam_depth_max> est_memo;
-    vector<simulate_result_t> estimated_history;
+    vector<shared_ptr<photon_t> > history;
 
 public:
     AI(config_t const & a_config) {
         engine = default_random_engine(); // fixed seed
         config = a_config;
+        history.push_back(initial_photon());
     }
     output_t think(input_t const & input) {
-        // prepare
-        int turn = input.current_turn;
-        field_t const & field = input.self_field;
-        pack_t const & pack = config.packs[turn];
-        pack_t const & filled_pack = fill_obstacles(pack, input.self_obstacles);
-        const int last_score = scores.empty() ? 0 : scores.back();
-
         // logging
         cerr << endl;
-        cerr << "turn: " << turn << endl;
+        cerr << "turn: " << input.turn << endl;
         cerr << "remaining time: " << input.remaining_time << endl;
-        if (not scores.empty()) cerr << "score: " << scores.back() << endl;
+        cerr << "score: " << (scores.empty() ? 0 : scores.back()) << endl;
         cerr << "obstacles: " << input.self_obstacles - input.opponent_obstacles << endl;
         cerr << "self estimated chain: " << estimate_with_erasing(input.self_field).chain << endl;
         cerr << "opp. estimated chain: " << estimate_with_erasing(input.opponent_field).chain << endl;
 
         // check
         if (not inputs.empty()) {
+            field_t const & field = input.self_field;
             auto & last = inputs.back();
-            pack_t const & last_filled_pack = fill_obstacles(config.packs[last.current_turn], last.self_obstacles);
+            pack_t const & last_filled_pack = fill_obstacles(config.packs[last.turn], last.self_obstacles);
             simulate_result_t result; field_t nfield; tie(result, nfield) = simulate_with_output(last.self_field, last_filled_pack, outputs.back());
             if (nfield != field) {
                 cerr << "<<<" << endl;
@@ -638,100 +654,59 @@ public:
             assert (nfield == field);
         }
 
-        output_t output = make_output(0xdeadbeef, 0);
+        output_t output = invalid_output;
+
+        // prepare
+        const state_summary_t oppo_sum = summarize_state(config, input.turn, input.opponent_field, input.opponent_obstacles);
+        shared_ptr<photon_t> const & pho = history.back();
+        update_photon_obstacles(pho, input.self_obstacles - input.opponent_obstacles, config.packs);
+        evaluate_photon_init(pho);
 
         // look at opponent
-        const state_summary_t oppo_sum = summarize_state(config, turn, input.opponent_field, input.opponent_obstacles); {
+        {
             int best_score = 0;
+            step_photon(pho, config.packs[input.turn]);
             repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
-                simulate_result_t result;
-                try {
-                    result = simulate_with_output(field, filled_pack, output).first;
-                } catch (simulate_invalid_output_exception e) {
-                    continue;
-                } catch (simulate_gameover_exception e) {
-                    continue;
-                }
-                if (is_effective_firing(result.score, input.self_obstacles, 0, oppo_sum)) {
-                    if (best_score < result.score) {
-                        best_score = result.score;
-                        output = make_output(x, r);
+                shared_ptr<photon_t> const & npho = (*pho->next)[x+pack_size-1][r];
+                if (not npho) continue;
+                evaluate_photon(npho, input.turn, oppo_sum);
+                if (npho->evaluation.is_effective_fired) {
+                    if (best_score < npho->result.score) {
+                        best_score = npho->result.score;
+                        output = npho->output;
                     }
                 }
             }
         }
 
-        // estimation
-        int estimated_chain = 0; {
-            simulate_result_t estimated = estimate_with_erasing(input.self_field);
-            setmax(estimated_chain, estimated.chain);
-            repeat_from (i,1,6) {
-                if (turn-i <= 0) break;
-                if (results[turn-i].chain >= chain_of_fire) break;
-                setmax(estimated_chain, estimated_history[turn-i].chain);
-            }
-            estimated_history.push_back(estimated); // scopeを切ったのでその場で追加までする
-        }
-
         // beam search
-        int beam_width =
+        const int beam_width =
             input.remaining_time < 20 * 1000 ?  30 :
             input.remaining_time < 30 * 1000 ?  80 :
             input.remaining_time < 40 * 1000 ? 160 :
             input.remaining_time < 50 * 1000 ? 180 :
             input.remaining_time < 60 * 1000 ? 200 :
             250;
-        int beam_depth =
-            estimated_chain <  4 ? 12 :
-            estimated_chain <  6 ? 10 :
-            estimated_chain <  8 ? 9 :
+        const int beam_depth =
+            input.remaining_time < 20 * 1000 ? 5 :
+            input.remaining_time < 40 * 1000 ? 6 :
+            input.remaining_time < 60 * 1000 ? 7 :
             8;
-        beam_depth = round(beam_depth * (
-            input.remaining_time < 20 * 1000 ? 0.7 :
-            input.remaining_time < 40 * 1000 ? 0.8 :
-            input.remaining_time < 60 * 1000 ? 0.9 :
-            1.0));
-        assert (beam_depth <= beam_depth_max);
-        auto memo_ix_at = [&](int age) { return (turn + age) % beam_depth_max; };
-        sim_memo[memo_ix_at(beam_depth - 1)].clear();
-        est_memo[memo_ix_at(beam_depth - 1)].clear();
-        if (turn > 0) {
-            input_t const & last = inputs.back();
-            int estimated_obstacles = max(0, last.self_obstacles - count_empty_blocks(config.packs[turn-1]));
-            if (estimated_obstacles < input.self_obstacles) {
-                int actual_obstacles = input.self_obstacles;
-                bool diff = false;
-                repeat (age, beam_depth-1) {
-                    if (config.packs.size() <= turn + age) break;
-                    int de = max(0, min(count_empty_blocks(config.packs[turn + age]), estimated_obstacles));
-                    int da = max(0, min(count_empty_blocks(config.packs[turn + age]), actual_obstacles));
-                    if (de != da) diff = true;
-                    estimated_obstacles -= de;
-                    actual_obstacles    -= da;
-                    if (diff) {
-                        sim_memo[memo_ix_at(age)].clear();
-                        est_memo[memo_ix_at(age)].clear();
-                    }
-                }
-            }
-        }
-        if (output.x == 0xdeadbeef) {
-            vector<photon_t> beam;
-            array<vector<photon_t>, beam_chain_max> nbeam = {};
-            beam.push_back(initial_photon(input, last_score));
-            beam.back().best_estimated_chain = estimated_chain;
+        if (output == invalid_output) {
+            vector<shared_ptr<photon_t> > beam;
+            array<vector<shared_ptr<photon_t> >, beam_chain_max> nbeam = {};
+            beam.push_back(pho);
             repeat (age, beam_depth) {
-                int memo_ix = memo_ix_at(age);
-                if (turn + age >= config.packs.size()) break; // game ends
-                for (photon_t const & pho : beam) {
+                if (input.turn + age >= config.packs.size()) break; // game ends
+                pack_t const & pack = config.packs[input.turn + age];
+                for (shared_ptr<photon_t> const & pho : beam) {
+                    step_photon(pho, pack);
                     repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
-                        try {
-                            photon_t npho = update_photon(pho, config.packs[turn + pho.age], make_output(x, r), oppo_sum, sim_memo[memo_ix], est_memo[memo_ix]);
-                            npho.evaluated_value += random() * 0.1; // tiebreak
-                            nbeam[npho.estimated_chain].push_back(npho);
-                        } catch (update_photon_exception e) {
-                            continue;
-                        }
+                        shared_ptr<photon_t> npho = (*pho->next)[x+pack_size-1][r];
+                        if (not npho) continue;
+                        evaluate_photon(npho, input.turn, oppo_sum);
+                        npho->evaluation.score += random() * 0.1; // tiebreak
+                        nbeam[min(beam_chain_max-1, npho->evaluation.estimated.chain)].push_back(npho);
                     }
                 }
                 beam.clear();
@@ -740,43 +715,47 @@ public:
                     int w = min<int>(beam_small_width, nbeam[i].size());
                     vector<int> ix2(nbeam[i].size()); whole(iota, ix2, 0);
                     partial_sort(ix2.begin(), ix2.begin() + w, ix2.end(), [&](int j1, int j2) {
-                        return nbeam[i][j2] < nbeam[i][j1]; // reversed
+                        return nbeam[i][j2]->evaluation.score < nbeam[i][j1]->evaluation.score; // reversed
                     });
                     repeat (j,w) beam.push_back(nbeam[i][ix2[j]]);
                     repeat_from (j,w,min<int>(beam_width,nbeam[i].size())) ix1.emplace_back(i, ix2[j]);
                 }
                 int w = max(0, min<int>(beam_width - beam.size(), ix1.size()));
                 whole(sort, ix1, [&](pair<int,int> i, pair<int,int> j) {
-                    return nbeam[j.first][j.second] < nbeam[i.first][i.second]; // reversed
+                    return nbeam[j.first][j.second]->evaluation.score < nbeam[i.first][i.second]->evaluation.score; // reversed
                 });
-                map<output_t, int> cnt;
+                array<array<int, 4>, 12> cnt = {};
                 repeat (i,w) {
-                    photon_t const & pho = nbeam[ix1[i].first][ix1[i].second];
-                    if (cnt[pho.output] < w * beam_output_limit_rate) {
-                        cnt[pho.output] += 1;
+                    shared_ptr<photon_t> const & pho = nbeam[ix1[i].first][ix1[i].second];
+                    int & it = cnt[pho->output.x+pack_size-1][pho->output.rotate];
+                    if (it < w * beam_output_limit_rate) {
+                        it += 1;
                         beam.push_back(pho);
                     }
                 }
                 repeat (i,nbeam.size()) nbeam[i].clear();
                 if (not beam.empty()) {
-                    photon_t & pho = *whole(max_element, beam);
-                    output = pho.output;
+                    shared_ptr<photon_t> const & pho = *whole(max_element, beam, [&](shared_ptr<photon_t> const & a, shared_ptr<photon_t> const & b) {
+                        return a->evaluation.score < b->evaluation.score; // reversed
+                    });
+                    output = first_output_from(pho, input.turn);
                     if (age == beam_depth-1) {
-                        simulate_result_t result = estimate_with_erasing(*pho.ptr.field);
                         cerr << "beam " << age << " width: " << beam.size() << endl;
-                        cerr << "    evaluated: " << pho.evaluated_value << endl;
-                        cerr << "    chain: + " << result.chain << endl;
-                        cerr << "    score: " << pho.score << " + " << result.score << endl;
+                        cerr << "    evaluated: " << pho->evaluation.score << endl;
+                        cerr << "    chain: + " << pho->result.chain << endl;
+                        cerr << "    score: " << pho->score - pho->result.score << " + " << pho->result.score << endl;
                     }
                 }
             }
         }
 
         // finalize
-        if (not is_valid_output(field, filled_pack, output)) {
+        const pack_t filled_pack = fill_obstacles(config.packs[input.turn], input.self_obstacles);
+        if (not is_valid_output(input.self_field, filled_pack, output)) {
+            output = make_output(0, 0);
             repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
                 try {
-                    simulate_with_output(field, filled_pack, output);
+                    simulate_with_output(input.self_field, filled_pack, output);
                     assert (false);
                 } catch (simulate_invalid_output_exception e) {
                     // nop
@@ -785,12 +764,14 @@ public:
                 }
             }
             cerr << "lose..." << endl;
-            output = make_output(0, 0);
         } else {
             inputs.push_back(input);
             outputs.push_back(output);
-            results.push_back(simulate_with_output(field, filled_pack, output).first);
+            results.push_back(simulate_with_output(input.self_field, filled_pack, output).first);
+            int last_score = scores.empty() ? 0 : scores.back();
             scores.push_back(last_score + results.back().score);
+            prune_photon(pho, output);
+            history.push_back((*pho->next)[output.x+pack_size-1][output.rotate]);
         }
         return output;
     }
