@@ -21,7 +21,6 @@
 #define whole(f,x,...) ([&](decltype((x)) whole) { return (f)(begin(whole), end(whole), ## __VA_ARGS__); })(x)
 typedef long long ll;
 using namespace std;
-using namespace std::chrono;
 template <class T> void setmax(T & a, T const & b) { if (a < b) a = b; }
 template <class T> void setmin(T & a, T const & b) { if (b < a) a = b; }
 bool is_on_field(int y, int x, int h, int w) { return 0 <= y and y < h and 0 <= x and x < w; }
@@ -37,6 +36,21 @@ template <typename T> point_t point(T const & p) { return (point_t) { p.y, p.x }
 bool operator == (point_t a, point_t b) { return make_pair(a.y, a.x) == make_pair(b.y, b.x); }
 bool operator != (point_t a, point_t b) { return make_pair(a.y, a.x) != make_pair(b.y, b.x); }
 bool operator <  (point_t a, point_t b) { return make_pair(a.y, a.x) <  make_pair(b.y, b.x); }
+
+template <typename T>
+using functional_priority_queue = priority_queue<T, vector<T>, function<bool (T const &, T const &)> >;
+
+struct clock_check {
+    chrono::high_resolution_clock::time_point clock_end;
+    clock_check(ll msec) {
+        chrono::high_resolution_clock::time_point clock_begin = chrono::high_resolution_clock::now();
+        clock_end = clock_begin + chrono::duration<ll, milli>(msec);
+    }
+    bool operator() () const {
+        chrono::high_resolution_clock::time_point clock_current = chrono::high_resolution_clock::now();
+        return clock_current < clock_end;
+    }
+};
 
 namespace primitive {
     const int pack_size = 3;
@@ -129,289 +143,289 @@ namespace primitive {
     bool operator  < (output_t const & a, output_t const & b) { return make_pair(a.x, a.rotate)  < make_pair(b.x, b.rotate); }
     bool operator == (output_t const & a, output_t const & b) { return make_pair(a.x, a.rotate) == make_pair(b.x, b.rotate); }
     const output_t invalid_output = { (int)0xdeadbeef, -1 }; // 簡単のため範囲を拡張
+
+    pack_t rotate(pack_t a, rotate_t r) {
+        assert (pack_size == 3);
+        pack_t b;
+        switch (r % 4 + (r < 0 ? 4 : 0)) {
+            case 0: b = a; break;
+            case 1: repeat (x, pack_size) repeat (y, pack_size) b.at[x][y] = a.at[2-y][  x]; break;
+            case 2: repeat (x, pack_size) repeat (y, pack_size) b.at[x][y] = a.at[2-x][2-y]; break;
+            case 3: repeat (x, pack_size) repeat (y, pack_size) b.at[x][y] = a.at[  y][2-x]; break;
+        }
+        return b;
+    }
+    pack_t fill_obstacles(pack_t a, int obstacles) {
+        repeat_reverse (y, pack_size) { // yが先
+            repeat (x, pack_size) {
+                if (obstacles and a.at[x][y] == empty_block) {
+                    a.at[x][y] = obstacle_block;
+                    obstacles -= 1;
+                }
+            }
+        }
+        return a;
+    }
+    int count_empty_blocks(pack_t const & a) {
+        int cnt = 0;
+        repeat (x, pack_size) repeat (y, pack_size) if (a.at[x][y] == empty_block) ++ cnt;
+        return cnt;
+    }
+    int consumed_obstacles(pack_t const & pack, int obstacles) {
+        return max(0, min(count_empty_blocks(pack), obstacles));
+    }
+
+    const int chain_coefficient[] = {
+        0,
+        1, // 1
+        1, // 2
+        2, // 3
+        2, // 4
+        3, // 5
+        4, // 6
+        6, // 7
+        8, // 8
+        10, // 9
+        13, // 10
+        17, // 11
+        23, // 12
+        30, // 13
+        39, // 14
+        51, // 15
+        66, // 16
+        86, 112, 146, 190, 247, 321, 417, 542, 705, 917, 1192, 1550, 2015, 2619, 3405, 4427, 5756, 7482, 9727, 12646, 16440, 21372, 27783, 36118, 46954, 61040, 79353, 103159, 134106, 174338, 226640, 294632, 383022, 497929, 647307, 841500, 1093950, 1422135, 1848776, 2403409, 3124432, 4061761, 5280290, 6864377, 8923690, 11600797, 15081036, 19605347, 25486951, 33133037, 43072948, 55994833, 72793283, 94631268, 123020648, 159926843, 207904896, 270276365, 351359275, 456767058, 593797175, 771936328,
+        1003517226, // 79
+        1304572395, // 80
+        1695944113, // 81
+    };
+    int calculate_score(int chain, int erase_count) {
+        return chain_coefficient[chain] * (erase_count / 2);
+    }
+    int count_obstacles_from_delta(int base, int delta) {
+        return (base + delta) / 5 - base / 5;
+    }
+
+    bool is_valid_output(field_t const & field, pack_t const & a_pack, output_t const & output) {
+        if (0 <= output.x and output.x + pack_size <= width) return true;
+        pack_t pack = rotate(a_pack, output.rotate); // お邪魔ブロックは既に置かれているとする
+        repeat (dy, pack_size) repeat (dx, pack_size) if (pack.at[dx][dy] != empty_block) {
+            int x = output.x + dx;
+            if (x < 0 or width <= x) return false;
+        }
+        return true;
+    }
 }
 using namespace primitive;
 
-pack_t rotate(pack_t a, rotate_t r) {
-    assert (pack_size == 3);
-    pack_t b;
-    switch (r % 4 + (r < 0 ? 4 : 0)) {
-        case 0: b = a; break;
-        case 1: repeat (x, pack_size) repeat (y, pack_size) b.at[x][y] = a.at[2-y][  x]; break;
-        case 2: repeat (x, pack_size) repeat (y, pack_size) b.at[x][y] = a.at[2-x][2-y]; break;
-        case 3: repeat (x, pack_size) repeat (y, pack_size) b.at[x][y] = a.at[  y][2-x]; break;
+namespace simulation {
+    template<size_t H, size_t W>
+    array<int,W> make_height_map(blocks_t<H,W> const & field) {
+        array<int,W> h;
+        repeat (x,W) {
+            int y = 0;
+            while (y < H and field.at[x][y] != empty_block) ++ y;
+            h[x] = y;
+        }
+        return h;
     }
-    return b;
-}
-
-pack_t fill_obstacles(pack_t a, int obstacles) {
-    repeat_reverse (y, pack_size) { // yが先
-        repeat (x, pack_size) {
-            if (obstacles and a.at[x][y] == empty_block) {
-                a.at[x][y] = obstacle_block;
-                obstacles -= 1;
+    vector<point_t> drop_pack(blocks_t<height + pack_size, width> & field, array<int,width> & height_map, pack_t const & a_pack, output_t const & output) {
+        vector<point_t> modified_blocks;
+        pack_t pack = rotate(a_pack, output.rotate); // お邪魔ブロックは既に置かれているとする
+        repeat (dy, 3) repeat (dx, 3) {
+            if (pack.at[dx][dy] != empty_block) {
+                int nx = output.x + dx;
+                assert (0 <= nx and nx < width);
+                field.at[nx][height_map[nx]] = pack.at[dx][dy];
+                if (field.at[nx][height_map[nx]] != obstacle_block) {
+                    modified_blocks.push_back(point(height_map[nx], nx));
+                }
+                ++ height_map[nx];
             }
         }
+        return modified_blocks;
     }
-    return a;
-}
-
-int count_empty_blocks(pack_t const & a) {
-    int cnt = 0;
-    repeat (x, pack_size) repeat (y, pack_size) if (a.at[x][y] == empty_block) ++ cnt;
-    return cnt;
-}
-
-int consumed_obstacles(pack_t const & pack, int obstacles) {
-    return max(0, min(count_empty_blocks(pack), obstacles));
-}
-
-const int chain_coefficient[] = {
-    0,
-    1, // 1
-    1, // 2
-    2, // 3
-    2, // 4
-    3, // 5
-    4, // 6
-    6, // 7
-    8, // 8
-    10, // 9
-    13, // 10
-    17, // 11
-    23, // 12
-    30, // 13
-    39, // 14
-    51, // 15
-    66, // 16
-    86, 112, 146, 190, 247, 321, 417, 542, 705, 917, 1192, 1550, 2015, 2619, 3405, 4427, 5756, 7482, 9727, 12646, 16440, 21372, 27783, 36118, 46954, 61040, 79353, 103159, 134106, 174338, 226640, 294632, 383022, 497929, 647307, 841500, 1093950, 1422135, 1848776, 2403409, 3124432, 4061761, 5280290, 6864377, 8923690, 11600797, 15081036, 19605347, 25486951, 33133037, 43072948, 55994833, 72793283, 94631268, 123020648, 159926843, 207904896, 270276365, 351359275, 456767058, 593797175, 771936328,
-    1003517226, // 79
-    1304572395, // 80
-    1695944113, // 81
-};
-int calculate_score(int chain, int erase_count) {
-    return chain_coefficient[chain] * (erase_count / 2);
-}
-int count_obstacles_from_delta(int base, int delta) {
-    return (base + delta) / 5 - base / 5;
-}
-
-bool is_valid_output(field_t const & field, pack_t const & a_pack, output_t const & output) {
-    if (0 <= output.x and output.x + pack_size <= width) return true;
-    pack_t pack = rotate(a_pack, output.rotate); // お邪魔ブロックは既に置かれているとする
-    repeat (dy, pack_size) repeat (dx, pack_size) if (pack.at[dx][dy] != empty_block) {
-        int x = output.x + dx;
-        if (x < 0 or width <= x) return false;
-    }
-    return true;
-}
-
-template<size_t H, size_t W>
-array<int,W> make_height_map(blocks_t<H,W> const & field) {
-    array<int,W> h;
-    repeat (x,W) {
-        int y = 0;
-        while (y < H and field.at[x][y] != empty_block) ++ y;
-        h[x] = y;
-    }
-    return h;
-}
-vector<point_t> drop_pack(blocks_t<height + pack_size, width> & field, array<int,width> & height_map, pack_t const & a_pack, output_t const & output) {
-    vector<point_t> modified_blocks;
-    pack_t pack = rotate(a_pack, output.rotate); // お邪魔ブロックは既に置かれているとする
-    repeat (dy, 3) repeat (dx, 3) {
-        if (pack.at[dx][dy] != empty_block) {
-            int nx = output.x + dx;
-            assert (0 <= nx and nx < width);
-            field.at[nx][height_map[nx]] = pack.at[dx][dy];
-            if (field.at[nx][height_map[nx]] != obstacle_block) {
-                modified_blocks.push_back(point(height_map[nx], nx));
-            }
-            ++ height_map[nx];
-        }
-    }
-    return modified_blocks;
-}
-template<size_t H, size_t W>
-vector<pair<point_t,int> > collect_erases(blocks_t<H,W> const & field, vector<point_t> const & modified_blocks) {
-    static const int dy[] = { -1, -1, 0, 1 }; // 下 右下 右 右上
-    static const int dx[] = {  0,  1, 1, 1 };
-    vector<pair<point_t,int> > erases;
-    for (point_t p : modified_blocks) { // 変化したところだけ見る
-        assert (field.at[p.x][p.y] != empty_block and field.at[p.x][p.y] != obstacle_block);
-        repeat (j, 4) {
-            int cnt = 1;
-            int acc = field.at[p.x][p.y];
-            int ly = p.y - dy[j];
-            int lx = p.x - dx[j];
-            for (; is_on_field(ly, lx, H, W); ++ cnt) {
-                block_t block = field.at[lx][ly];
-                if (block == empty_block) break;
-                if (acc + block > erasing_sum) break;
-                acc += block;
-                ly -= dy[j];
-                lx -= dx[j];
-            }
-            // しゃくとり法っぽく
-            int ry = p.y + dy[j];
-            int rx = p.x + dx[j];
-            while (cnt --) {
-                while (is_on_field(ry, rx, H, W)) {
-                    block_t block = field.at[rx][ry];
+    template<size_t H, size_t W>
+    vector<pair<point_t,int> > collect_erases(blocks_t<H,W> const & field, vector<point_t> const & modified_blocks) {
+        static const int dy[] = { -1, -1, 0, 1 }; // 下 右下 右 右上
+        static const int dx[] = {  0,  1, 1, 1 };
+        vector<pair<point_t,int> > erases;
+        for (point_t p : modified_blocks) { // 変化したところだけ見る
+            assert (field.at[p.x][p.y] != empty_block and field.at[p.x][p.y] != obstacle_block);
+            repeat (j, 4) {
+                int cnt = 1;
+                int acc = field.at[p.x][p.y];
+                int ly = p.y - dy[j];
+                int lx = p.x - dx[j];
+                for (; is_on_field(ly, lx, H, W); ++ cnt) {
+                    block_t block = field.at[lx][ly];
                     if (block == empty_block) break;
                     if (acc + block > erasing_sum) break;
                     acc += block;
-                    ry += dy[j];
-                    rx += dx[j];
+                    ly -= dy[j];
+                    lx -= dx[j];
                 }
-                ly += dy[j];
-                lx += dx[j];
-                if (acc == erasing_sum) erases.emplace_back(point(ly, lx), j);
-                acc -= field.at[lx][ly];
-            }
-        }
-    }
-    whole(sort, erases);
-    erases.erase(whole(unique, erases), erases.end()); // 重複排除
-    return erases;
-}
-template<size_t H, size_t W>
-pair<int, vector<point_t> > apply_erases(blocks_t<H,W> const & field, vector<pair<point_t,int> > const & erases) {
-    static const int dy[] = { -1, -1, 0, 1 }; // 下 右下 右 右上
-    static const int dx[] = {  0,  1, 1, 1 };
-    int erase_count = 0;
-    vector<point_t> used;
-    for (auto && it : erases) {
-        point_t p; int j; tie(p, j) = it;
-        int cnt = 0, acc = 0;
-        for (; acc != erasing_sum; ++ cnt) {
-            acc += field.at[p.x][p.y];
-            used.push_back(p);
-            p.y += dy[j];
-            p.x += dx[j];
-        }
-        erase_count += cnt;
-    }
-    whole(sort, used);
-    used.erase(whole(unique, used), used.end());
-    return { erase_count, used };
-}
-template<size_t H, size_t W>
-vector<point_t> erase_blocks(blocks_t<H,W> & field, array<int,W> & height_map, vector<point_t> const & points_to_erase) {
-    auto & at = field.at;
-    array<int,W> old_height_map = height_map;
-    for (point_t p : points_to_erase) {
-        at[p.x][p.y] = empty_block;
-        setmin(height_map[p.x], p.y);
-    }
-    vector<point_t> modified_blocks;
-    repeat (x,W) {
-        for (int y = height_map[x] + 1; y < old_height_map[x]; ++ y) {
-            if (at[x][y] != empty_block) {
-                at[x][height_map[x]] = at[x][y];
-                if (at[x][height_map[x]] != obstacle_block) {
-                    modified_blocks.push_back(point(height_map[x], x));
+                // しゃくとり法っぽく
+                int ry = p.y + dy[j];
+                int rx = p.x + dx[j];
+                while (cnt --) {
+                    while (is_on_field(ry, rx, H, W)) {
+                        block_t block = field.at[rx][ry];
+                        if (block == empty_block) break;
+                        if (acc + block > erasing_sum) break;
+                        acc += block;
+                        ry += dy[j];
+                        rx += dx[j];
+                    }
+                    ly += dy[j];
+                    lx += dx[j];
+                    if (acc == erasing_sum) erases.emplace_back(point(ly, lx), j);
+                    acc -= field.at[lx][ly];
                 }
-                ++ height_map[x];
-                at[x][y] = empty_block;
             }
         }
+        whole(sort, erases);
+        erases.erase(whole(unique, erases), erases.end()); // 重複排除
+        return erases;
     }
-    return modified_blocks;
-}
-
-struct simulate_result_t {
-    int score;
-    int chain;
-};
-bool operator < (simulate_result_t const & a, simulate_result_t const & b) {
-        return make_pair(a.score, a.chain) < make_pair(b.score, b.chain);
-}
-
-template<size_t H, size_t W>
-simulate_result_t simulate(blocks_t<H,W> & field, array<int,W> & height_map, vector<point_t> modified_blocks, int initial_chain) {
-    // 2. ブロックの消滅&落下処理
-    int score = 0;
-    int chain = initial_chain;
-    while (not modified_blocks.empty()) {
-        // 検査
-        vector<pair<point_t,int> > erases = collect_erases(field, modified_blocks);
-        if (erases.empty()) break; // 消滅なし
-        ++ chain; // ここでincrement
-        // 消滅&落下
-        int erase_count; tie(erase_count, modified_blocks) = apply_erases(field, erases);
-        modified_blocks = erase_blocks(field, height_map, modified_blocks);
-        score += calculate_score(chain, erase_count);
+    template<size_t H, size_t W>
+    pair<int, vector<point_t> > apply_erases(blocks_t<H,W> const & field, vector<pair<point_t,int> > const & erases) {
+        static const int dy[] = { -1, -1, 0, 1 }; // 下 右下 右 右上
+        static const int dx[] = {  0,  1, 1, 1 };
+        int erase_count = 0;
+        vector<point_t> used;
+        for (auto && it : erases) {
+            point_t p; int j; tie(p, j) = it;
+            int cnt = 0, acc = 0;
+            for (; acc != erasing_sum; ++ cnt) {
+                acc += field.at[p.x][p.y];
+                used.push_back(p);
+                p.y += dy[j];
+                p.x += dx[j];
+            }
+            erase_count += cnt;
+        }
+        whole(sort, used);
+        used.erase(whole(unique, used), used.end());
+        return { erase_count, used };
     }
-    // 3. 4. 5. 6. お邪魔ブロック関連処理
-    // nop
-    // 7. ターン終了
-    simulate_result_t result;
-    result.score = score;
-    result.chain = chain;
-    return result;
-}
-struct simulate_invalid_output_exception {};
-struct simulate_gameover_exception {};
-pair<simulate_result_t, field_t> simulate_with_output(field_t const & field, pack_t const & pack, output_t const & output) { // throws exceptions
-    if (not is_valid_output(field, pack, output)) throw simulate_invalid_output_exception();
-    blocks_t<height + pack_size, width> workspace;
-    repeat (x, width) repeat (y,    height) workspace.at[x][y] = field.at[x][y];
-    repeat (x, width) repeat (y, pack_size) workspace.at[x][height + y] = empty_block;
-    // 1. パックの投下
-    array<int,width> height_map = make_height_map(field);
-    vector<point_t> modified_blocks = drop_pack(workspace, height_map, pack, output);
-    // simulate()
-    simulate_result_t result = simulate(workspace, height_map, modified_blocks, 0);
-    // result
-    repeat (x, width) if (height_map[x] > height) throw simulate_gameover_exception();
-    field_t nfield;
-    repeat (x, width) repeat (y, height) nfield.at[x][y] = workspace.at[x][y];
-    return { result, nfield };
-}
-
-simulate_result_t estimate_with_erasing(field_t const & field) {
-    const array<int,width> height_map = make_height_map(field);
-    simulate_result_t acc = { -1, 0 };
-    repeat (x, width) {
-        repeat_reverse (y, height_map[x]) {
-            if (field.at[x][y] == empty_block or field.at[x][y] == obstacle_block) continue;
-            bool erasable =
-                y+1 >= height
-                or (x-1 >= 0    and field.at[x-1][y+1] == empty_block)
-                or (                field.at[x  ][y+1] == empty_block)
-                or (x+1 < width and field.at[x+1][y+1] == empty_block);
-            if (not erasable) break;
-            field_t nfield = field;
-            array<int,width> nheight_map = height_map;
-            vector<point_t> modified_blocks { point(y, x) };
-            modified_blocks = erase_blocks(nfield, nheight_map, modified_blocks);
-            simulate_result_t result = simulate(nfield, nheight_map, modified_blocks, 1);
-            if (make_pair(acc.chain, acc.score) < make_pair(result.chain, result.score)) {
-                acc = result;
+    template<size_t H, size_t W>
+    vector<point_t> erase_blocks(blocks_t<H,W> & field, array<int,W> & height_map, vector<point_t> const & points_to_erase) {
+        auto & at = field.at;
+        array<int,W> old_height_map = height_map;
+        for (point_t p : points_to_erase) {
+            at[p.x][p.y] = empty_block;
+            setmin(height_map[p.x], p.y);
+        }
+        vector<point_t> modified_blocks;
+        repeat (x,W) {
+            for (int y = height_map[x] + 1; y < old_height_map[x]; ++ y) {
+                if (at[x][y] != empty_block) {
+                    at[x][height_map[x]] = at[x][y];
+                    if (at[x][height_map[x]] != obstacle_block) {
+                        modified_blocks.push_back(point(height_map[x], x));
+                    }
+                    ++ height_map[x];
+                    at[x][y] = empty_block;
+                }
             }
         }
+        return modified_blocks;
     }
-    return acc;
-}
 
-simulate_result_t estimate_with_drop(field_t const & field) {
-    const array<int,width> height_map = make_height_map(field);
-    simulate_result_t acc = { -1, 0 };
-    repeat (x, width) {
-        repeat_from (b,1,9+1) {
-            blocks_t<height + 1, width> nfield = {};
-            repeat (nx, width) repeat (y, height_map[nx]) nfield.at[nx][y] = field.at[nx][y];
-            nfield.at[x][height_map[x]] = b;
-            array<int,width> nheight_map = height_map;
-            nheight_map[x] += 1;
-            vector<point_t> modified_blocks { point(height_map[x], x) };
-            simulate_result_t result = simulate(nfield, nheight_map, modified_blocks, 0);
-            setmax(acc, result);
-        }
+    struct simulate_result_t {
+        int score;
+        int chain;
+    };
+    bool operator < (simulate_result_t const & a, simulate_result_t const & b) {
+            return make_pair(a.score, a.chain) < make_pair(b.score, b.chain);
     }
-    return acc;
+
+    template<size_t H, size_t W>
+    simulate_result_t simulate(blocks_t<H,W> & field, array<int,W> & height_map, vector<point_t> modified_blocks, int initial_chain) {
+        // 2. ブロックの消滅&落下処理
+        int score = 0;
+        int chain = initial_chain;
+        while (not modified_blocks.empty()) {
+            // 検査
+            vector<pair<point_t,int> > erases = collect_erases(field, modified_blocks);
+            if (erases.empty()) break; // 消滅なし
+            ++ chain; // ここでincrement
+            // 消滅&落下
+            int erase_count; tie(erase_count, modified_blocks) = apply_erases(field, erases);
+            modified_blocks = erase_blocks(field, height_map, modified_blocks);
+            score += calculate_score(chain, erase_count);
+        }
+        // 3. 4. 5. 6. お邪魔ブロック関連処理
+        // nop
+        // 7. ターン終了
+        simulate_result_t result;
+        result.score = score;
+        result.chain = chain;
+        return result;
+    }
+    struct simulate_invalid_output_exception {};
+    struct simulate_gameover_exception {};
+    pair<simulate_result_t, field_t> simulate_with_output(field_t const & field, pack_t const & pack, output_t const & output) { // throws exceptions
+        if (not is_valid_output(field, pack, output)) throw simulate_invalid_output_exception();
+        blocks_t<height + pack_size, width> workspace;
+        repeat (x, width) repeat (y,    height) workspace.at[x][y] = field.at[x][y];
+        repeat (x, width) repeat (y, pack_size) workspace.at[x][height + y] = empty_block;
+        // 1. パックの投下
+        array<int,width> height_map = make_height_map(field);
+        vector<point_t> modified_blocks = drop_pack(workspace, height_map, pack, output);
+        // simulate()
+        simulate_result_t result = simulate(workspace, height_map, modified_blocks, 0);
+        // result
+        repeat (x, width) if (height_map[x] > height) throw simulate_gameover_exception();
+        field_t nfield;
+        repeat (x, width) repeat (y, height) nfield.at[x][y] = workspace.at[x][y];
+        return { result, nfield };
+    }
+
+    simulate_result_t estimate_with_erasing(field_t const & field) {
+        const array<int,width> height_map = make_height_map(field);
+        simulate_result_t acc = { -1, 0 };
+        repeat (x, width) {
+            repeat_reverse (y, height_map[x]) {
+                if (field.at[x][y] == empty_block or field.at[x][y] == obstacle_block) continue;
+                bool erasable =
+                    y+1 >= height
+                    or (x-1 >= 0    and field.at[x-1][y+1] == empty_block)
+                    or (                field.at[x  ][y+1] == empty_block)
+                    or (x+1 < width and field.at[x+1][y+1] == empty_block);
+                if (not erasable) break;
+                field_t nfield = field;
+                array<int,width> nheight_map = height_map;
+                vector<point_t> modified_blocks { point(y, x) };
+                modified_blocks = erase_blocks(nfield, nheight_map, modified_blocks);
+                simulate_result_t result = simulate(nfield, nheight_map, modified_blocks, 1);
+                if (make_pair(acc.chain, acc.score) < make_pair(result.chain, result.score)) {
+                    acc = result;
+                }
+            }
+        }
+        return acc;
+    }
+
+    simulate_result_t estimate_with_drop(field_t const & field) {
+        const array<int,width> height_map = make_height_map(field);
+        simulate_result_t acc = { -1, 0 };
+        repeat (x, width) {
+            repeat_from (b,1,9+1) {
+                blocks_t<height + 1, width> nfield = {};
+                repeat (nx, width) repeat (y, height_map[nx]) nfield.at[nx][y] = field.at[nx][y];
+                nfield.at[x][height_map[x]] = b;
+                array<int,width> nheight_map = height_map;
+                nheight_map[x] += 1;
+                vector<point_t> modified_blocks { point(height_map[x], x) };
+                simulate_result_t result = simulate(nfield, nheight_map, modified_blocks, 0);
+                setmax(acc, result);
+            }
+        }
+        return acc;
+    }
 }
+using namespace simulation;
 
 const int summary_depth = 12;
 struct state_summary_t {
@@ -619,9 +633,6 @@ bool compare_photon(shared_ptr<photon_t> const & a, shared_ptr<photon_t> const &
     return a->evaluation.score < b->evaluation.score;
 }
 
-template <typename T>
-using functional_priority_queue = priority_queue<T, vector<T>, function<bool (T const &, T const &)> >;
-
 class AI {
 private:
     config_t config;
@@ -693,12 +704,6 @@ public:
         const int beam_depth = max(6, 18 - stress/4);
         const int time_limit = min(input.remaining_time / 30, max(800, 120 * stress)); // msec
         if (output == invalid_output) {
-            high_resolution_clock::time_point clock_begin = high_resolution_clock::now();
-            auto clock_check = [&]() {
-                high_resolution_clock::time_point clock_end = high_resolution_clock::now();
-                ll clock_count = duration_cast<milliseconds>(clock_end - clock_begin).count();
-                return clock_count < time_limit;
-            };
             bool is_fired = false;
             int recorded_age = -1;
             double best_score = - INFINITY;
@@ -722,7 +727,8 @@ public:
             vector<functional_priority_queue<shared_ptr<photon_t> > > que;
             repeat (i, beam_depth) que.emplace_back(compare_photon);
             que[0].emplace(pho);
-            while (clock_check()) {
+            clock_check check(time_limit);
+            while (check()) {
                 repeat (i, beam_depth) {
                     if (input.turn + i >= config.packs.size()) break;
                     repeat (j, beam_width) {
@@ -746,6 +752,8 @@ public:
         // finalize
         const pack_t filled_pack = fill_obstacles(config.packs[input.turn], input.self_obstacles);
         if (not is_valid_output(input.self_field, filled_pack, output)) {
+            output = make_output(0, 0);
+            cerr << "lose..." << endl;
             repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
                 try {
                     simulate_with_output(input.self_field, filled_pack, output).first;
@@ -756,7 +764,6 @@ public:
                     // nop
                 }
             }
-            cerr << "lose..." << endl;
         } else {
             inputs.push_back(input);
             outputs.push_back(output);
