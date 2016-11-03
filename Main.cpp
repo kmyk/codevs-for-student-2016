@@ -498,7 +498,7 @@ void evaluate_photon_base(shared_ptr<photon_t> const & pho) {
     pho->evaluation.estimated = estimate_with_erasing(pho->field);
     double acc = 0;
     acc += pho->score; // scoreを基準に
-    acc += pho->evaluation.estimated.chain * 20; // 大連鎖だと4*5なんて誤差、小連鎖でscoreを気にされると不利
+    acc += pho->evaluation.estimated.chain * 30; // 大連鎖だと4*5なんて誤差、小連鎖でscoreを気にされると不利
     acc -= 3 * max(0, min(160, pho->obstacles - pho->evaluation.estimated.score / 6));
     repeat (x, width) repeat (y, height) {
         int dx = min(x, width-x-1);
@@ -506,10 +506,11 @@ void evaluate_photon_base(shared_ptr<photon_t> const & pho) {
             acc -= 3 + 0.3 * y + 1.2 * dx; // 端に寄せた方がいいけど、あまりそればかり気にされても困る
         }
     }
-    if (pho->result.chain <= 2) acc -= 3.0 * pho->result.score; // 手数で損
-    if (pho->result.chain == 3) acc -= 2.0 * pho->result.score;
-    if (pho->result.chain == 4) acc -= 1.5 * pho->result.score;
-    if (pho->result.chain == 5) acc -= 1.0 * pho->result.score;
+    if (pho->result.chain == 1) acc -= 6.0 * pho->result.score; // 手数で損
+    if (pho->result.chain == 2) acc -= 5.0 * pho->result.score;
+    if (pho->result.chain == 3) acc -= 4.0 * pho->result.score;
+    if (pho->result.chain == 4) acc -= 3.0 * pho->result.score;
+    if (pho->result.chain == 5) acc -= 2.0 * pho->result.score;
     pho->evaluation.base_score = acc;
 }
 
@@ -580,18 +581,24 @@ void evaluate_photon(shared_ptr<photon_t> const & pho, int base_turn, state_summ
     int age = pho->turn - base_turn;
     shared_ptr<photon_t> ppho = pho->parent.lock();
     pho->evaluation.is_effective_fired = is_effective_firing(pho->result.score, pho->obstacles, age, oppo_sum);
+    double k = pow(1 + 0.01 * stress, -age+1);
     {
         double acc = 0;
         if (age > 0) acc += ppho->evaluation.permanent_bonus; // 前のやつに足していく
-        if (pho->evaluation.is_effective_fired) {
-            acc += max(0.1, 1 - (0.02 + 0.003 * stress) * age) * (400 + 0.2 * pho->result.score); // 発火した それが可能でしかも勝てるというのは大きい
+        if (pho->result.chain >= chain_of_fire) {
+            acc -= pho->result.score;
+            if (pho->evaluation.is_effective_fired) {
+                acc += (20 * stress) + k * (1.2 * pho->result.score); // 発火した それが可能でしかも勝てるというのは大きい
+            } else {
+                acc += k * pho->result.score;
+            }
         }
         pho->evaluation.permanent_bonus = acc;
     }
     {
         double acc = 0;
         acc += pho->evaluation.base_score;
-        acc += max(0.1, 1 - (0.02 + 0.003 * stress) * age) * pho->evaluation.estimated.score; // 不正確な値だけど比較可能だろうからよい
+        acc += k * pho->evaluation.estimated.score; // 不正確な値だけど比較可能だろうからよい
         pho->evaluation.score = acc + pho->evaluation.permanent_bonus;
     }
 }
@@ -681,23 +688,6 @@ public:
         evaluate_photon_init(pho);
         const int stress = max(pho->evaluation.estimated.chain, oppo_sum.best_estimated[0].chain);
 
-        // look at opponent
-        {
-            int best_score = 0;
-            step_photon(pho, config.packs[input.turn]);
-            repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
-                shared_ptr<photon_t> const & npho = (*pho->next)[x+pack_size-1][r];
-                if (not npho) continue;
-                evaluate_photon(npho, input.turn, oppo_sum, stress);
-                if (npho->evaluation.is_effective_fired) {
-                    if (best_score < npho->result.score) {
-                        best_score = npho->result.score;
-                        output = npho->output;
-                    }
-                }
-            }
-        }
-
         // chokudai search
         const int beam_width = 3;
         const int beam_depth = max(6, 18 - stress/4);
@@ -716,7 +706,7 @@ public:
                 int age = pho->turn - input.turn;
                 assert (age >= 1);
                 if (make_pair(is_fired ? 100 : age, best_score) < make_pair(pho->result.chain >= chain_of_fire ? 100 : age, pho->evaluation.score)) {
-                    is_fired = pho->result.chain >= chain_of_fire;
+                    is_fired = pho->evaluation.is_effective_fired;
                     recorded_age = age;
                     best_score = pho->evaluation.score;
                     output = first_output_from(pho, input.turn);
