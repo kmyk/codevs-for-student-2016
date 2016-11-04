@@ -41,7 +41,7 @@ onlinename := $(shell [ -e ${optionfile} ] && cat ${optionfile} | grep onlineNam
 userfile := codevsforstudent/user.json
 tmpuserfile := codevsforstudent/user.json.$(shell date +%s)
 ranking:
-	cat ${userfile} | tail -n 5000 | jq -r '.[] | ( .name, .rating )' | while read user ; do read rating ; win=$$($(MAKE) log | grep ${onlinename}_win- | grep $${user}_lose- | wc -l) ; lose=$$($(MAKE) log | grep ${onlinename}_lose- | grep $${user}_win- | wc -l) ; echo $$user'\t'$$win-$$lose'\t'$$rating | expand -t 20 ; done
+	cat ${userfile} | jq -r '.[] | ( .name, .rating )' | while read user ; do read rating ; win=$$($(MAKE) log | tail -n 5000 | grep ${onlinename}_win- | grep $${user}_lose- | wc -l) ; lose=$$($(MAKE) log | tail -n 5000 | grep ${onlinename}_lose- | grep $${user}_win- | wc -l) ; echo $$user'\t'$$win-$$lose'\t'$$rating | expand -t 20 ; done
 ranking/update:
 	curl 'http://52.198.238.77/codevsforstudent/user?course=Hard' > ${tmpuserfile}
 	cp ${tmpuserfile} ${userfile}
