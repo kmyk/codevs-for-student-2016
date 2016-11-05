@@ -52,6 +52,17 @@ struct clock_check {
     }
 };
 
+struct stopwatch {
+    chrono::high_resolution_clock::time_point clock_begin;
+    stopwatch() {
+        clock_begin = chrono::high_resolution_clock::now();
+    }
+    ll operator() () const {
+        chrono::high_resolution_clock::time_point clock_end = chrono::high_resolution_clock::now();
+        return chrono::duration_cast<chrono::milliseconds>(clock_end - clock_begin).count();
+    }
+};
+
 namespace primitive {
     const int pack_size = 3;
     const int width = 10;
@@ -461,37 +472,28 @@ shared_ptr<photon_t> initial_photon(int turn, int obstacles, field_t const & fie
     return pho;
 }
 
-void evaluate_photon_for_search(shared_ptr<photon_t> const & pho, int base_turn) {
-    int age = pho->turn - base_turn;
+void evaluate_photon_for_search(shared_ptr<photon_t> const & pho) {
     pho->evaluation.estimated = estimate_with_erasing(pho->field);
-    {
-        shared_ptr<photon_t> ppho = pho->parent.lock();
-        double acc = 0;
-        if (age != 1 and ppho) acc += ppho->evaluation.permanent_bonus; // 前のやつに足していく
-        pho->evaluation.permanent_bonus = acc;
-    }
-    {
-        double acc = 0;
-        acc += pho->score; // scoreを基準に
-        acc += pho->evaluation.estimated.chain * 30; // 大連鎖だと4*5なんて誤差、小連鎖でscoreを気にされると不利
-        acc += pho->evaluation.estimated.score; // 不正確な値だけど比較可能だろうからよい
-        acc -= 3 * max(0, min(160, pho->obstacles - pho->evaluation.estimated.score / 6));
-        repeat (x, width) repeat (y, height) {
-            int dx = min(x, width-x-1);
-            if (pho->field.at[x][y] == obstacle_block) {
-                acc -= 3 + 0.3 * y + 1.2 * dx; // 端に寄せた方がいいけど、あまりそればかり気にされても困る
-            }
+    double acc = 0;
+    acc += pho->score; // scoreを基準に
+    acc += pho->evaluation.estimated.chain * 30; // 大連鎖だと4*5なんて誤差、小連鎖でscoreを気にされると不利
+    acc += pho->evaluation.estimated.score; // 不正確な値だけど比較可能だろうからよい
+    acc -= 3 * max(0, min(160, pho->obstacles - pho->evaluation.estimated.score / 6));
+    repeat (x, width) repeat (y, height) {
+        int dx = min(x, width-x-1);
+        if (pho->field.at[x][y] == obstacle_block) {
+            acc -= 3 + 0.3 * y + 1.2 * dx; // 端に寄せた方がいいけど、あまりそればかり気にされても困る
         }
-        if (pho->result.chain == 1) acc -= 6.0 * pho->result.score; // 手数で損
-        if (pho->result.chain == 2) acc -= 5.0 * pho->result.score;
-        if (pho->result.chain == 3) acc -= 4.0 * pho->result.score;
-        if (pho->result.chain == 4) acc -= 3.0 * pho->result.score;
-        if (pho->result.chain == 5) acc -= 2.0 * pho->result.score;
-        pho->evaluation.score = acc + pho->evaluation.permanent_bonus;
     }
+    if (pho->result.chain == 1) acc -= 6.0 * pho->result.score; // 手数で損
+    if (pho->result.chain == 2) acc -= 5.0 * pho->result.score;
+    if (pho->result.chain == 3) acc -= 4.0 * pho->result.score;
+    if (pho->result.chain == 4) acc -= 3.0 * pho->result.score;
+    if (pho->result.chain == 5) acc -= 2.0 * pho->result.score;
+    pho->evaluation.score = acc + pho->evaluation.permanent_bonus;
 }
 
-// 次のstepを(まだなら)作成 評価はしない
+// 次のstepを(まだなら)作成 評価もする
 void step_photon(shared_ptr<photon_t> const & pho, pack_t const & pack) {
     if (pho->next) return;
     int consumed = consumed_obstacles(pack, pho->obstacles);
@@ -512,6 +514,7 @@ void step_photon(shared_ptr<photon_t> const & pho, pack_t const & pack) {
         npho->obstacles = pho->obstacles - consumed - count_obstacles_from_delta(pho->score, npho->result.score);
         npho->parent = pho;
         (*pho->next)[x+pack_size-1][r] = npho;
+        evaluate_photon_for_search(npho);
     }
 }
 
@@ -601,7 +604,6 @@ void beam_search(shared_ptr<photon_t> const & initial, config_t const & config, 
             repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
                 shared_ptr<photon_t> const & npho = (*pho->next)[x+pack_size-1][r];
                 if (not npho) continue;
-                evaluate_photon_for_search(npho, initial->turn);
                 if (cont(npho) and i+1 < beam_depth) {
                     nbeam.push_back(npho);
                 }
@@ -629,7 +631,6 @@ void chokudai_search(shared_ptr<photon_t> const & initial, config_t const & conf
                 repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
                     shared_ptr<photon_t> const & npho = (*pho->next)[x+pack_size-1][r];
                     if (not npho) continue;
-                    evaluate_photon_for_search(npho, initial->turn);
                     if (cont(npho) and i+1 < beam_depth) {
                         que[i+1].emplace(npho);
                     }
@@ -671,6 +672,8 @@ public:
         config = a_config;
     }
     output_t think(input_t const & input) {
+        stopwatch watch;
+
         // logging
         cerr << endl;
         cerr << "turn: " << input.turn << endl;
@@ -719,6 +722,7 @@ public:
                 }
             }
             if (output == invalid_output) {
+                cerr << "oppo reset cache" << endl;
                 oppo_history.push_back(initial_photon(input.turn, input.opponent_obstacles, input.opponent_field));
             } else {
                 prune_photon(pho, output);
@@ -730,6 +734,7 @@ public:
         }
 
         // opponent
+        watch = stopwatch();
         opponent_info_t oppo = {}; {
             const int beam_width = 60;
             const int beam_depth = oppo_depth;
@@ -747,8 +752,10 @@ public:
         repeat (i, oppo_depth) {
             cerr << "oppo " << i << ": " << oppo.result[i].chain << "c " << oppo.result[i].score << "pt" << endl;
         }
+        cerr << "oppo elapsed: " << watch() << "ms" << endl;
 
         // chokudai search
+        watch = stopwatch();
         output_t output = invalid_output; {
             const int stress = max(self_history.back()->evaluation.estimated.chain, oppo.best.chain);
             const int beam_width = 3;
@@ -781,6 +788,7 @@ public:
             chokudai_search(self_history.back(), config, beam_width, beam_depth, time_limit, cont);
             if (npho) output = first_photon_from(npho, input.turn)->output;
         }
+        cerr << "self elapsed: " << watch() << "ms" << endl;
 
         // finalize
         const pack_t filled_pack = fill_obstacles(config.packs[input.turn], input.self_obstacles);
