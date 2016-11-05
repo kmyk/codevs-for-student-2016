@@ -182,7 +182,7 @@ namespace primitive {
         repeat (x, pack_size) repeat (y, pack_size) if (a.at[x][y] == empty_block) ++ cnt;
         return cnt;
     }
-    int consumed_obstacles(pack_t const & pack, int obstacles) {
+    int count_consumed_obstacles(pack_t const & pack, int obstacles) {
         return max(0, min(count_empty_blocks(pack), obstacles));
     }
 
@@ -343,16 +343,16 @@ namespace simulation {
         return modified_blocks;
     }
 
-    struct simulate_result_t {
+    struct result_t {
         int score;
         int chain;
     };
-    bool operator < (simulate_result_t const & a, simulate_result_t const & b) {
+    bool operator < (result_t const & a, result_t const & b) {
             return make_pair(a.score, a.chain) < make_pair(b.score, b.chain);
     }
 
     template<size_t H, size_t W>
-    simulate_result_t simulate(blocks_t<H,W> & field, array<int,W> & height_map, vector<point_t> modified_blocks, int initial_chain) {
+    result_t simulate(blocks_t<H,W> & field, array<int,W> & height_map, vector<point_t> modified_blocks, int initial_chain) {
         // 2. ブロックの消滅&落下処理
         int score = 0;
         int chain = initial_chain;
@@ -369,14 +369,14 @@ namespace simulation {
         // 3. 4. 5. 6. お邪魔ブロック関連処理
         // nop
         // 7. ターン終了
-        simulate_result_t result;
+        result_t result;
         result.score = score;
         result.chain = chain;
         return result;
     }
     struct simulate_invalid_output_exception {};
     struct simulate_gameover_exception {};
-    pair<simulate_result_t, field_t> simulate_with_output(field_t const & field, pack_t const & pack, output_t const & output) { // throws exceptions
+    pair<result_t, field_t> simulate_with_output(field_t const & field, pack_t const & pack, output_t const & output) { // throws exceptions
         if (not is_valid_output(field, pack, output)) throw simulate_invalid_output_exception();
         blocks_t<height + pack_size, width> workspace;
         repeat (x, width) repeat (y,    height) workspace.at[x][y] = field.at[x][y];
@@ -385,7 +385,7 @@ namespace simulation {
         array<int,width> height_map = make_height_map(field);
         vector<point_t> modified_blocks = drop_pack(workspace, height_map, pack, output);
         // simulate()
-        simulate_result_t result = simulate(workspace, height_map, modified_blocks, 0);
+        result_t result = simulate(workspace, height_map, modified_blocks, 0);
         // result
         repeat (x, width) if (height_map[x] > height) throw simulate_gameover_exception();
         field_t nfield;
@@ -393,9 +393,9 @@ namespace simulation {
         return { result, nfield };
     }
 
-    simulate_result_t estimate_with_erasing(field_t const & field) {
+    result_t estimate_with_erasing(field_t const & field) {
         const array<int,width> height_map = make_height_map(field);
-        simulate_result_t acc = { -1, 0 };
+        result_t acc = { -1, 0 };
         repeat (x, width) {
             repeat_reverse (y, height_map[x]) {
                 if (field.at[x][y] == empty_block or field.at[x][y] == obstacle_block) continue;
@@ -409,7 +409,7 @@ namespace simulation {
                 array<int,width> nheight_map = height_map;
                 vector<point_t> modified_blocks { point(y, x) };
                 modified_blocks = erase_blocks(nfield, nheight_map, modified_blocks);
-                simulate_result_t result = simulate(nfield, nheight_map, modified_blocks, 1);
+                result_t result = simulate(nfield, nheight_map, modified_blocks, 1);
                 if (make_pair(acc.chain, acc.score) < make_pair(result.chain, result.score)) {
                     acc = result;
                 }
@@ -418,9 +418,9 @@ namespace simulation {
         return acc;
     }
 
-    simulate_result_t estimate_with_drop(field_t const & field) {
+    result_t estimate_with_drop(field_t const & field) {
         const array<int,width> height_map = make_height_map(field);
-        simulate_result_t acc = { -1, 0 };
+        result_t acc = { -1, 0 };
         repeat (x, width) {
             repeat_from (b,1,9+1) {
                 blocks_t<height + 1, width> nfield = {};
@@ -429,7 +429,7 @@ namespace simulation {
                 array<int,width> nheight_map = height_map;
                 nheight_map[x] += 1;
                 vector<point_t> modified_blocks { point(height_map[x], x) };
-                simulate_result_t result = simulate(nfield, nheight_map, modified_blocks, 0);
+                result_t result = simulate(nfield, nheight_map, modified_blocks, 0);
                 setmax(acc, result);
             }
         }
@@ -441,7 +441,7 @@ using namespace simulation;
 struct evaluateion_info_t {
     double score;
     double permanent_bonus;
-    simulate_result_t estimated;
+    result_t estimated;
 };
 struct photon_t {
     int turn;
@@ -449,7 +449,7 @@ struct photon_t {
     int obstacles; // 負なら相手に送る分 / 相手が発火したらここが変わり次以降の状態が消去される
     field_t field;
     output_t output; // この手に至る辺
-    simulate_result_t result; // その結果
+    result_t result; // その結果
     evaluateion_info_t evaluation;
     weak_ptr<photon_t> parent; // 逆辺
     shared_ptr<array<array<shared_ptr<photon_t>, 4>, 12> > next; // 次状態への辺
@@ -472,6 +472,7 @@ shared_ptr<photon_t> initial_photon(int turn, int obstacles, field_t const & fie
     return pho;
 }
 
+// 評価 諸々を気にせず純粋に盤面のみから
 void evaluate_photon_for_search(shared_ptr<photon_t> const & pho) {
     pho->evaluation.estimated = estimate_with_erasing(pho->field);
     double acc = 0;
@@ -496,7 +497,7 @@ void evaluate_photon_for_search(shared_ptr<photon_t> const & pho) {
 // 次のstepを(まだなら)作成 評価もする
 void step_photon(shared_ptr<photon_t> const & pho, pack_t const & pack) {
     if (pho->next) return;
-    int consumed = consumed_obstacles(pack, pho->obstacles);
+    int consumed = count_consumed_obstacles(pack, pho->obstacles);
     pack_t filled_pack = fill_obstacles(pack, consumed);
     pho->next = make_unique<array<array<shared_ptr<photon_t>, 4>, 12> >();
     repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
@@ -525,8 +526,8 @@ void update_photon_obstacles(shared_ptr<photon_t> const & pho, int updated_obsta
     } else if (not pho->next) {
         pho->obstacles = updated_obstacles;
     } else {
-        int         consumed = consumed_obstacles(packs[pho->turn],    pho->obstacles);
-        int updated_consumed = consumed_obstacles(packs[pho->turn], updated_obstacles);
+        int         consumed = count_consumed_obstacles(packs[pho->turn],    pho->obstacles);
+        int updated_consumed = count_consumed_obstacles(packs[pho->turn], updated_obstacles);
         pho->obstacles = updated_obstacles;
         if (consumed != updated_consumed) {
             pho->next = nullptr; // 開放
@@ -543,8 +544,8 @@ void update_photon_obstacles(shared_ptr<photon_t> const & pho, int updated_obsta
 
 const int oppo_depth = 6;
 struct opponent_info_t {
-    array<simulate_result_t, oppo_depth> result;
-    simulate_result_t best;
+    array<result_t, oppo_depth> result;
+    result_t best;
     int score;
 };
 
@@ -646,7 +647,7 @@ private:
     vector<input_t> inputs;
     vector<output_t> outputs;
     vector<int> scores;
-    vector<simulate_result_t> results;
+    vector<result_t> results;
 
 private:
     default_random_engine engine;
@@ -688,7 +689,7 @@ public:
             field_t const & field = input.self_field;
             auto & last = inputs.back();
             pack_t const & last_filled_pack = fill_obstacles(config.packs[last.turn], last.self_obstacles);
-            simulate_result_t result; field_t nfield; tie(result, nfield) = simulate_with_output(last.self_field, last_filled_pack, outputs.back());
+            result_t result; field_t nfield; tie(result, nfield) = simulate_with_output(last.self_field, last_filled_pack, outputs.back());
             if (nfield != field) {
                 cerr << "<<<" << endl;
                 cerr << nfield << endl;
