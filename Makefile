@@ -6,7 +6,7 @@ CXXFLAGS := -std=c++14 -Wall -Wno-sign-compare -O3 -mtune=native
 
 archive:
 	- rm Main.zip
-	zip Main.zip run.sh Makefile Main.cpp
+	zip Main.zip run.sh a.out
 
 build: build/fast
 build/debug/slow:
