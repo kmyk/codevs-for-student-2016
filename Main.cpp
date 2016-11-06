@@ -570,7 +570,7 @@ void evaluate_photon_init(shared_ptr<photon_t> const & pho) {
 double evaluate_photon_for_output(shared_ptr<photon_t> const & pho, int base_turn, opponent_info_t const & oppo, int stress) {
     int age = pho->turn - base_turn;
     double acc = 0;
-    double k = pow(0.9, age-1);
+    double k = pow(0.8, age-1);
     if (pho->result.chain >= chain_of_fire) {
         if (is_effective_firing(pho->result.score, pho->obstacles, age, oppo)) {
             acc += 20 * stress + 20 * pho->result.chain + k * pho->result.score; // 発火した それが可能でしかも勝てるというのは大きい
