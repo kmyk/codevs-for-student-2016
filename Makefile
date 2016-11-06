@@ -48,3 +48,5 @@ ranking/update:
 
 io/tailf:
 	find codevsforstudent/log/io -name '1P_*_stderr.txt' -printf "%T+\t%p\n" | sort -r | head -n 1 | cut -f 2 | xargs tailf -n-1
+io/cat:
+	find codevsforstudent/log/io -name '1P_*_stderr.txt' -printf "%T+\t%p\n" | sort -r | head -n 1 | cut -f 2 | xargs cat
