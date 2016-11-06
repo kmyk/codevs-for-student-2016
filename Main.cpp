@@ -154,6 +154,7 @@ namespace primitive {
     output_t make_output(int x, rotate_t rotate) { return { x, rotate }; }
     bool operator  < (output_t const & a, output_t const & b) { return make_pair(a.x, a.rotate)  < make_pair(b.x, b.rotate); }
     bool operator == (output_t const & a, output_t const & b) { return make_pair(a.x, a.rotate) == make_pair(b.x, b.rotate); }
+    bool operator != (output_t const & a, output_t const & b) { return make_pair(a.x, a.rotate) != make_pair(b.x, b.rotate); }
     const output_t invalid_output = { (int)0xdeadbeef, -1 }; // 簡単のため範囲を拡張
 
     pack_t rotate(pack_t a, rotate_t r) {
@@ -581,13 +582,8 @@ double evaluate_photon_for_output(shared_ptr<photon_t> const & pho, int base_tur
 }
 
 shared_ptr<photon_t> parent_photon_at(shared_ptr<photon_t> pho, int turn) {
-    while (pho->turn > turn) {
-        shared_ptr<photon_t> npho = pho->parent.lock();
-        if (not npho) return nullptr;
-        if (not npho->next or (*npho->next)[pho->output.x+pack_size-1][pho->output.rotate] != pho) return nullptr;
-        pho = npho;
-    }
-    if (pho->turn != turn) return nullptr;
+    while (pho and pho->turn > turn) pho = pho->parent.lock();
+    if (not pho or pho->turn != turn) return nullptr;
     return pho;
 }
 
@@ -615,15 +611,17 @@ void beam_search(shared_ptr<photon_t> const & initial, config_t const & config, 
         for (shared_ptr<photon_t> const & pho : beam) {
             step_photon(pho, config.packs[initial->turn + i]);
             repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
-                shared_ptr<photon_t> const & npho = (*pho->next)[x+pack_size-1][r];
+                shared_ptr<photon_t> npho = (*pho->next)[x+pack_size-1][r];
                 if (not npho) continue;
-                if (cont(npho) and i+1 < beam_depth) {
+                npho = cont(npho);
+                if (not npho) continue;
+                if (i+1 < beam_depth) {
                     nbeam.push_back(npho);
                 }
             }
         }
         beam.resize(min<int>(beam_width, nbeam.size()));
-        partial_sort_copy(nbeam.begin(), nbeam.end(), beam.begin(), beam.end(), compare_photon);
+        partial_sort_copy(nbeam.begin(), nbeam.end(), beam.begin(), beam.end(), compare_photon_reversed);
         nbeam.clear();
     }
 }
@@ -641,9 +639,11 @@ void chokudai_search(deque<functional_priority_queue<pair<double, weak_ptr<photo
                 if (not pho) { -- j; continue; } // 無視して同じ深さをもう一度
                 step_photon(pho, config.packs[initial_turn + i]);
                 repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
-                    shared_ptr<photon_t> const & npho = (*pho->next)[x+pack_size-1][r];
+                    shared_ptr<photon_t> npho = (*pho->next)[x+pack_size-1][r];
                     if (not npho) continue;
-                    if (cont(npho)) que[i+1].emplace(npho->evaluation.score, npho);
+                    npho = cont(npho);
+                    if (not npho) continue;
+                    que[i+1].emplace(npho->evaluation.score, npho);
                 }
             }
         }
@@ -658,6 +658,7 @@ void chokudai_search(shared_ptr<photon_t> const & initial, config_t const & conf
     chokudai_search(que, config, initial->turn, beam_width, beam_depth, time_limit_msec, cont);
 }
 
+struct counter_exception {}; // 刺し判定の大域脱出用
 class AI {
 private:
     config_t config;
@@ -809,7 +810,7 @@ public:
                 int age = pho->turn - input.turn;
                 assert (age >= 1);
                 setmax(oppo.result[age-1], pho->result);
-                return pho->result.chain < chain_of_fire; // 打ち切るか否か
+                return pho->result.chain < chain_of_fire ? pho : nullptr; // 打ち切るか否か
             };
             shared_ptr<photon_t> initial = oppo_history.back();
             beam_search(initial, config, beam_width, beam_depth, cont);
@@ -853,10 +854,10 @@ public:
                     cerr << endl;
                 }
                 if (pho->result.chain < chain_of_fire) { // 打ち切るか否か
-                    return true;
+                    return pho;
                 } else {
                     fired[age-1].emplace(pho->result.score, pho);
-                    return false;
+                    return shared_ptr<photon_t>(nullptr);
                 }
             };
             cerr << "load cache" << endl;
@@ -876,9 +877,50 @@ public:
                 assert (pho);
                 output = pho->output;
             }
-            repeat (i, beam_depth) cerr << "at " << i << ": beam " << que[i].size() << " / fire " << fired[i].size()<< endl;
+            repeat (i, beam_depth) cerr << "width at " << i << ": beam " << que[i].size() << " / fire " << fired[i].size()<< endl;
         }
         cerr << "self elapsed: " << watch() << "ms" << endl;
+
+/*
+        // 刺せるなら強制発火
+        watch = stopwatch();
+        if (input.opponent_obstacles <= 5) { // 既に送れてるならしない
+            if (0 < fired.size() and not fired[0].empty()) {
+                shared_ptr<photon_t> const & best = fired[0].top().second.lock();
+                assert (best);
+                if (output != best->output) { // もう発火することにしてあるなら見ない
+                    if (best->obstacles + max(30, oppo.result[0].score/5 + 10) <= 0) { // 明らかにだめな場合はしない
+                        cerr << "firing check for: +" << 1 << "t " << best->result.chain << "c " << best->result.score << "pt" << endl;
+                        const int beam_width = 120;
+                        const int beam_depth = 10;
+                        auto cont = [&](shared_ptr<photon_t> pho) {
+                            int age = pho->turn - input.turn;
+                            assert (age >= 1);
+                            if (age == 1) {
+                                pho = make_shared<photon_t>(*pho);
+                                pho->next = nullptr;
+                                pho->obstacles += best->result.score/5; // ここで足す
+                            }
+                            if (- pho->obstacles >= 20) {
+                                cerr << "counter found: +" << age << "t " << pho->result.chain << "c " << pho->result.score << "pt" << endl;
+                                throw counter_exception();
+                            }
+                            return pho->result.chain < chain_of_fire ? pho : nullptr;
+                        };
+                        shared_ptr<photon_t> const & initial = oppo_history.back();
+                        try {
+                            beam_search(initial, config, beam_width, beam_depth, cont);
+                            output = parent_photon_at(best, input.turn + 1)->output;
+                            cerr << "fire" << endl;
+                        } catch (counter_exception e) {
+                            // nop
+                        }
+                    }
+                }
+            }
+        }
+        cerr << "firing beam elapsed: " << watch() << "ms" << endl;
+*/
 
         // finalize
         const pack_t filled_pack = fill_obstacles(config.packs[input.turn], input.self_obstacles);
@@ -887,8 +929,11 @@ public:
             int score = -1;
             repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
                 try {
-                    result_t result = simulate_with_output(input.self_field, filled_pack, output).first;
-                    if (score <= result.score) output = make_output(x, r);
+                    result_t result = simulate_with_output(input.self_field, filled_pack, make_output(x, r)).first;
+                    if (score <= result.score) {
+                        score = result.score;
+                        output = make_output(x, r);
+                    }
                 } catch (simulate_invalid_output_exception e) {
                     // nop
                 } catch (simulate_gameover_exception e) {
