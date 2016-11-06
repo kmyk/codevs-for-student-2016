@@ -487,7 +487,7 @@ shared_ptr<photon_t> initial_photon(int turn, int obstacles, field_t const & fie
 void evaluate_photon_for_search(shared_ptr<photon_t> const & pho) {
     vector<pair<result_t, int> > estimateds = estimate_with_erasing_all(pho->field);
     partial_sort(estimateds.begin(), estimateds.begin() + min<int>(3, estimateds.size()), estimateds.end(), [&](pair<result_t, int> const & a, pair<result_t, int> const & b) {
-        return make_tuple(a.first.chain, - a.second, a.first.score) > make_tuple(b.first.chain, - b.second, b.first.score); // reversed
+        return make_tuple(a.first.chain, a.first.score, - a.second) > make_tuple(b.first.chain, b.first.score, - b.second); // reversed
     });
     pho->evaluation.estimated = estimateds.empty() ? (result_t) { -1, -1 } : estimateds.front().first;
     double acc = 0;
