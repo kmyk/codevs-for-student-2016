@@ -349,9 +349,11 @@ namespace simulation {
         int score;
         int chain;
     };
-    bool operator < (result_t const & a, result_t const & b) {
-            return make_pair(a.score, a.chain) < make_pair(b.score, b.chain);
-    }
+    bool compare_result_with_score(result_t const & a, result_t const & b) { return make_pair(a.score, a.chain) < make_pair(b.score, b.chain); }
+    bool compare_result_with_chain(result_t const & a, result_t const & b) { return make_pair(a.chain, a.score) < make_pair(b.chain, b.score); }
+    bool compare_result_with_score_reversed(result_t const & a, result_t const & b) { return make_pair(a.score, a.chain) > make_pair(b.score, b.chain); }
+    bool compare_result_with_chain_reversed(result_t const & a, result_t const & b) { return make_pair(a.chain, a.score) > make_pair(b.chain, b.score); }
+    bool operator < (result_t const & a, result_t const & b) { return compare_result_with_score(a, b); }
 
     template<size_t H, size_t W>
     result_t simulate(blocks_t<H,W> & field, array<int,W> & height_map, vector<point_t> modified_blocks, int initial_chain) {
@@ -395,9 +397,9 @@ namespace simulation {
         return { result, nfield };
     }
 
-    result_t estimate_with_erasing(field_t const & field) {
+    vector<pair<result_t, int> > estimate_with_erasing_all(field_t const & field) {
         const array<int,width> height_map = make_height_map(field);
-        result_t acc = { -1, 0 };
+        vector<pair<result_t, int> > acc;
         repeat (x, width) {
             repeat_reverse (y, height_map[x]) {
                 if (field.at[x][y] == empty_block or field.at[x][y] == obstacle_block) continue;
@@ -412,12 +414,19 @@ namespace simulation {
                 vector<point_t> modified_blocks { point(y, x) };
                 modified_blocks = erase_blocks(nfield, nheight_map, modified_blocks);
                 result_t result = simulate(nfield, nheight_map, modified_blocks, 1);
-                if (make_pair(acc.chain, acc.score) < make_pair(result.chain, result.score)) {
-                    acc = result;
-                }
+                int consumed = 0;
+                repeat (x, width) consumed += height_map[x] - nheight_map[x];
+                acc.emplace_back(result, consumed);
             }
         }
         return acc;
+    }
+    result_t estimate_with_erasing(field_t const & field) {
+        vector<pair<result_t, int> > acc = estimate_with_erasing_all(field);
+        if (acc.empty()) return { -1, -1 };
+        return whole(max_element, acc, [&](pair<result_t, int> const & a, pair<result_t, int> const & b) {
+            return make_tuple(a.first.chain, - a.second, a.first.score) < make_tuple(b.first.chain, - b.second, b.first.score);
+        })->first;
     }
 
     result_t estimate_with_drop(field_t const & field) {
@@ -476,23 +485,25 @@ shared_ptr<photon_t> initial_photon(int turn, int obstacles, field_t const & fie
 
 // 評価 諸々を気にせず純粋に盤面のみから
 void evaluate_photon_for_search(shared_ptr<photon_t> const & pho) {
-    pho->evaluation.estimated = estimate_with_erasing(pho->field);
+    vector<pair<result_t, int> > estimateds = estimate_with_erasing_all(pho->field);
+    partial_sort(estimateds.begin(), estimateds.begin() + min<int>(3, estimateds.size()), estimateds.end(), [&](pair<result_t, int> const & a, pair<result_t, int> const & b) {
+        return make_tuple(a.first.chain, - a.second, a.first.score) > make_tuple(b.first.chain, - b.second, b.first.score); // reversed
+    });
+    pho->evaluation.estimated = estimateds.empty() ? (result_t) { -1, -1 } : estimateds.front().first;
     double acc = 0;
     acc += pho->score; // scoreを基準に
-    acc += pho->evaluation.estimated.chain * 30; // 大連鎖だと4*5なんて誤差、小連鎖でscoreを気にされると不利
-    acc += pho->evaluation.estimated.score; // 不正確な値だけど比較可能だろうからよい
-    acc -= 3 * max(0, min(160, pho->obstacles - pho->evaluation.estimated.score / 6));
+    repeat (i, min<int>(3, estimateds.size())) {
+        double k = i == 0 ? 1.0 : 0.3;
+        acc += k * estimateds[i].first.chain * 30; // 大連鎖だと4*5なんて誤差、小連鎖でscoreを気にされると不利
+        acc += k * estimateds[i].first.score; // 不正確な値だけど比較可能だろうからよい
+        acc -= k * estimateds[i].second * 4;
+    }
     repeat (x, width) repeat (y, height) {
         int dx = min(x, width-x-1);
         if (pho->field.at[x][y] == obstacle_block) {
-            acc -= 3 + 0.3 * y + 1.2 * dx; // 端に寄せた方がいいけど、あまりそればかり気にされても困る
+            acc -= 3 + 0.3 * y + 1.2 * pow(dx, 1.2); // 端に寄せた方がいいけど、あまりそればかり気にされても困る
         }
     }
-    if (pho->result.chain == 1) acc -= 6.0 * pho->result.score; // 手数で損
-    if (pho->result.chain == 2) acc -= 5.0 * pho->result.score;
-    if (pho->result.chain == 3) acc -= 4.0 * pho->result.score;
-    if (pho->result.chain == 4) acc -= 3.0 * pho->result.score;
-    if (pho->result.chain == 5) acc -= 2.0 * pho->result.score;
     pho->evaluation.score = acc + pho->evaluation.permanent_bonus;
 }
 
@@ -816,7 +827,7 @@ public:
             beam_search(initial, config, beam_width, beam_depth, cont);
         }
         oppo.best = *whole(max_element, oppo.result);
-        repeat (i, oppo_depth) setmax<int>(oppo.score, pow(0.8, i) * oppo.result[i].score);
+        repeat (i, oppo_depth) setmax<int>(oppo.score, pow(0.8, i) * oppo.result[i].score); // ここけっこう重要
         repeat (i, oppo_depth) {
             cerr << "oppo " << i << ": " << oppo.result[i].chain << "c " << oppo.result[i].score << "pt" << endl;
         }
