@@ -503,7 +503,7 @@ struct photon_t {
     result_t result; // その結果
     evaluateion_info_t evaluation;
     weak_ptr<photon_t> parent; // 逆辺
-    unique_ptr<array<array<shared_ptr<photon_t>, 4>, 12> > next; // 次状態への辺
+    shared_ptr<array<array<shared_ptr<photon_t>, 4>, 12> > next; // 次状態への辺
 };
 
 shared_ptr<photon_t> initial_photon(int turn, int obstacles, field_t const & field) {
@@ -640,12 +640,15 @@ void evaluate_photon(shared_ptr<photon_t> const & pho, int base_turn, state_summ
     }
 }
 
-shared_ptr<photon_t> first_photon_from(shared_ptr<photon_t> pho, int turn) {
-    while (pho->parent.lock() and pho->turn != turn+1) pho = pho->parent.lock();
+shared_ptr<photon_t> parent_photon_at(shared_ptr<photon_t> pho, int turn) {
+    while (pho and pho->turn > turn) pho = pho->parent.lock();
+    if (not pho or pho->turn != turn) return nullptr;
     return pho;
 }
 
 void prune_photon(shared_ptr<photon_t> const & pho, output_t output) {
+    assert (pho);
+    if (not pho->next) return;
     repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
         if (x == output.x and r == output.rotate) continue;
         (*pho->next)[x+pack_size-1][r] = nullptr;
@@ -659,28 +662,34 @@ bool compare_photon_with_score_reversed(shared_ptr<photon_t> const & a, shared_p
 bool compare_photon_with_first(pair<double, weak_ptr<photon_t> > const & a, pair<double, weak_ptr<photon_t> > const & b) { return a.first < b.first; }
 
 template <typename F>
-void chokudai_search(shared_ptr<photon_t> const & initial, config_t const & config, input_t const & input, int beam_width, int beam_depth, ll time_limit_msec, F cont) {
-    vector<functional_priority_queue<shared_ptr<photon_t> > > que;
-    repeat (i, beam_depth) que.emplace_back(compare_photon);
-    que[0].emplace(initial);
+void chokudai_search(deque<functional_priority_queue<shared_ptr<photon_t> > > & que, config_t const & config, int initial_turn, int beam_width, int beam_depth, ll time_limit_msec, F cont) {
+    assert (initial_turn + beam_depth < config.packs.size());
+    assert (beam_depth + 1 < que.size());
     clock_check check(time_limit_msec);
     while (check()) {
         repeat (i, beam_depth) {
-            if (input.turn + i >= config.packs.size()) break;
             repeat (j, beam_width) {
                 if (que[i].empty()) break;
                 shared_ptr<photon_t> pho = que[i].top(); que[i].pop();
-                step_photon(pho, config.packs[input.turn + i]);
+                if (not pho) { -- j; continue; } // 無視して同じ深さをもう一度
+                step_photon(pho, config.packs[initial_turn + i]);
                 repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
-                    shared_ptr<photon_t> const & npho = (*pho->next)[x+pack_size-1][r];
+                    shared_ptr<photon_t> npho = (*pho->next)[x+pack_size-1][r];
                     if (not npho) continue;
-                    if (cont(npho) and i+1 < beam_depth) {
-                        que[i+1].emplace(npho);
-                    }
+                    if (not cont(npho)) continue;
+                    que[i+1].emplace(npho);
                 }
             }
         }
     }
+}
+
+template <typename F>
+void chokudai_search(shared_ptr<photon_t> const & initial, config_t const & config, int beam_width, int beam_depth, ll time_limit_msec, F cont) {
+    deque<functional_priority_queue<shared_ptr<photon_t> > > que;
+    repeat (i, beam_depth + 1) que.emplace_back(compare_photon);
+    que[0].emplace(initial);
+    chokudai_search(que, config, initial->turn, beam_width, beam_depth, time_limit_msec, cont);
 }
 
 class AI {
@@ -773,7 +782,7 @@ public:
             bool is_fired = false;
             int recorded_age = -1;
             double best_score = - INFINITY;
-            shared_ptr<photon_t> npho = nullptr;
+            shared_ptr<photon_t> result = nullptr;
             auto cont = [&](shared_ptr<photon_t> const & pho) {
                 evaluate_photon(pho, input.turn, oppo_sum, stress); // 評価は文脈を使うのでここでやる
                 int age = pho->turn - input.turn;
@@ -782,7 +791,7 @@ public:
                     is_fired = pho->evaluation.is_effective_fired;
                     recorded_age = age;
                     best_score = pho->evaluation.score;
-                    npho = pho;
+                    result = pho;
                     cerr << "result: +" << age << "t " << pho->evaluation.score << "pt";
                     if (pho->result.chain >= chain_of_fire) {
                         cerr << " (fire " << pho->result.chain << "c " << pho->result.score << "pt)";
@@ -793,8 +802,13 @@ public:
                 }
                 return pho->result.chain < chain_of_fire; // 打ち切るか否か
             };
-            chokudai_search(pho, config, input, beam_width, beam_depth, time_limit, cont);
-            if (npho) output = first_photon_from(npho, input.turn)->output;
+            chokudai_search(pho, config, beam_width, beam_depth, time_limit, cont);
+            if (result) {
+                shared_ptr<photon_t> pho = parent_photon_at(result, input.turn + 1);
+                assert (pho);
+                output = pho->output;
+            }
+            cerr << "done" << endl;
         }
         cerr << "self elapsed: " << watch() << "ms" << endl;
 
