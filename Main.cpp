@@ -452,7 +452,6 @@ using namespace simulation;
 struct evaluateion_info_t {
     double score;
     double base_score;
-    double permanent_bonus;
     bool is_effective_fired;
     result_t estimated;
 };
@@ -481,7 +480,6 @@ shared_ptr<photon_t> initial_photon(int turn, int obstacles, field_t const & fie
     // evaluation
     pho->evaluation.score = 0;
     pho->evaluation.base_score = 0;
-    pho->evaluation.permanent_bonus = 0;
     pho->evaluation.is_effective_fired = false;
     pho->evaluation.estimated = {};
     return pho;
@@ -490,7 +488,6 @@ shared_ptr<photon_t> initial_photon(int turn, int obstacles, field_t const & fie
 void evaluate_photon_base(shared_ptr<photon_t> const & pho) {
     // 初期化
     pho->evaluation.score = 0;
-    pho->evaluation.permanent_bonus = 0;
     pho->evaluation.is_effective_fired = false;
     // 評価
     pho->evaluation.estimated = estimate_with_erasing(pho->field);
@@ -578,7 +575,6 @@ bool is_effective_firing(int score, int obstacles, int age, opponent_info_t cons
 
 void evaluate_photon_init(shared_ptr<photon_t> const & pho) {
     pho->evaluation.score = 0;
-    pho->evaluation.permanent_bonus = 0;
     pho->evaluation.is_effective_fired = false;
 }
 
@@ -588,27 +584,20 @@ void evaluate_photon(shared_ptr<photon_t> const & pho, int base_turn, opponent_i
     int age = pho->turn - base_turn;
     shared_ptr<photon_t> ppho = pho->parent.lock();
     pho->evaluation.is_effective_fired = is_effective_firing(pho->result.score, pho->obstacles, age, oppo);
-    {
-        double acc = 0;
-        if (ppho) acc += ppho->evaluation.permanent_bonus; // 前のやつに足していく
-        if (pho->result.chain >= chain_of_fire) {
-            // double k = max(pow(1 + 0.02 * stress, -age+1), 0.4 - 0.02 * age); // 弱いっぽい？
-            double k = pow(1 + 0.01 * stress, -age+1);
-            acc -= pho->result.score;
-            if (pho->evaluation.is_effective_fired) {
-                acc += (20 * stress) + k * (1.2 * pho->result.score); // 発火した それが可能でしかも勝てるというのは大きい
-            } else {
-                acc += k * pho->result.score;
-            }
+    double acc = 0;
+    if (pho->result.chain >= chain_of_fire) {
+        // double k = max(pow(1 + 0.02 * stress, -age+1), 0.4 - 0.02 * age); // 弱いっぽい？
+        double k = pow(1 + 0.01 * stress, -age+1);
+        acc -= pho->result.score;
+        if (pho->evaluation.is_effective_fired) {
+            acc += (20 * stress) + k * (1.2 * pho->result.score); // 発火した それが可能でしかも勝てるというのは大きい
+        } else {
+            acc += k * pho->result.score;
         }
-        pho->evaluation.permanent_bonus = acc;
     }
-    {
-        double acc = 0;
-        acc += pho->evaluation.base_score;
-        acc += max(0.1, 1 - 0.03 * (age - 1)) * pho->evaluation.estimated.score; // 不正確な値だけど比較可能だろうからよい
-        pho->evaluation.score = acc + pho->evaluation.permanent_bonus;
-    }
+    acc += pho->evaluation.base_score;
+    acc += max(0.1, 1 - 0.03 * (age - 1)) * pho->evaluation.estimated.score; // 不正確な値だけど比較可能だろうからよい
+    pho->evaluation.score = acc;
 }
 
 shared_ptr<photon_t> parent_photon_at(shared_ptr<photon_t> pho, int turn) {
