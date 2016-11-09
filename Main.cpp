@@ -583,7 +583,8 @@ void evaluate_photon_init(shared_ptr<photon_t> const & pho) {
 }
 
 // 相手の情報等を注入し評価を修正する
-void evaluate_photon(shared_ptr<photon_t> const & pho, int base_turn, opponent_info_t const & oppo, int stress) {
+void evaluate_photon(shared_ptr<photon_t> const & pho, int base_turn, opponent_info_t const & oppo) {
+    const int stress = 18; // 固定にする
     int age = pho->turn - base_turn;
     shared_ptr<photon_t> ppho = pho->parent.lock();
     pho->evaluation.is_effective_fired = is_effective_firing(pho->result.score, pho->obstacles, age, oppo);
@@ -811,7 +812,7 @@ public:
             double best_score = - INFINITY;
             shared_ptr<photon_t> result = nullptr;
             auto cont = [&](shared_ptr<photon_t> const & pho) {
-                evaluate_photon(pho, input.turn, oppo, stress); // 評価は文脈を使うのでここでやる
+                evaluate_photon(pho, input.turn, oppo); // 評価は文脈を使うのでここでやる
                 int age = pho->turn - input.turn;
                 assert (age >= 1);
                 bool cur_is_fired = pho->evaluation.is_effective_fired;
