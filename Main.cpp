@@ -110,6 +110,15 @@ namespace primitive {
     template <size_t H, size_t W> bool operator == (blocks_t<H, W> const & a, blocks_t<H, W> const & b) { return a.at == b.at; }
     template <size_t H, size_t W> bool operator != (blocks_t<H, W> const & a, blocks_t<H, W> const & b) { return a.at != b.at; }
     template <size_t H, size_t W> bool operator <  (blocks_t<H, W> const & a, blocks_t<H, W> const & b) { return a.at <  b.at; }
+    template<size_t H, size_t W>
+    int count_block(blocks_t<H,W> const & a, block_t b) {
+        int cnt = 0;
+        repeat (x, pack_size) repeat (y, pack_size) if (a.at[x][y] == b) ++ cnt;
+        return cnt;
+    }
+    int count_obstacle_blocks(field_t const & a) {
+        return count_block(a, obstacle_block);
+    }
 
     const int dangerline = height + 1;
     struct config_t {
@@ -180,9 +189,7 @@ namespace primitive {
         return a;
     }
     int count_empty_blocks(pack_t const & a) {
-        int cnt = 0;
-        repeat (x, pack_size) repeat (y, pack_size) if (a.at[x][y] == empty_block) ++ cnt;
-        return cnt;
+        return count_block(a, empty_block);
     }
     int count_consumed_obstacles(pack_t const & pack, int obstacles) {
         return max(0, min(count_empty_blocks(pack), obstacles));
@@ -631,6 +638,7 @@ bool compare_photon_reversed(shared_ptr<photon_t> const & a, shared_ptr<photon_t
 bool compare_photon_with_score(shared_ptr<photon_t> const & a, shared_ptr<photon_t> const & b) { return a->result.score < b->result.score; }
 bool compare_photon_with_score_reversed(shared_ptr<photon_t> const & a, shared_ptr<photon_t> const & b) { return a->result.score > b->result.score; }
 bool compare_photon_with_first(pair<double, weak_ptr<photon_t> > const & a, pair<double, weak_ptr<photon_t> > const & b) { return a.first < b.first; }
+bool compare_photon_with_first_reversed(pair<double, weak_ptr<photon_t> > const & a, pair<double, weak_ptr<photon_t> > const & b) { return a.first > b.first; }
 
 template <typename F>
 void beam_search(shared_ptr<photon_t> const & initial, config_t const & config, int beam_width, int beam_depth, F cont) {
