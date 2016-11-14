@@ -881,10 +881,10 @@ public:
         watch = stopwatch();
 #endif
         output_t output = invalid_output; {
-            const int stress = max(self_history.back()->evaluation.estimateds.front().first.chain, oppo.best.chain);
+            const int estimated_chain = self_history.back()->evaluation.estimateds.front().first.chain;
             const int beam_width = 3;
-            const int beam_depth = max(22 - min(10, input.turn), 18 - stress/4);
-            const int time_limit = min(input.remaining_time / 30, max(1200, 170 * stress)); // msec
+            const int beam_depth = max(22 - min(14, input.turn), 18 - estimated_chain/2);
+            const int time_limit = min(input.remaining_time / 30, max(1200, 170 * max(estimated_chain, oppo.best.chain))); // msec
             while (beam_depth+1 >= que.size()) que.emplace_back(compare_photon_with_first);
             while (fired.size() < que.size()) fired.emplace_back(compare_photon_with_first);
             bool is_fired = false;
@@ -959,7 +959,11 @@ public:
 #ifndef RELEASE
         watch = stopwatch();
 #endif
-        const int fire_depth = 3 - (input.remaining_time < 60 * 1000) - (input.remaining_time < 30 * 1000);
+        const int fire_depth =
+            input.remaining_time > 90 * 1000 ? 3 :
+            input.remaining_time > 60 * 1000 ? 2 :
+            input.remaining_time > 30 * 1000 ? 1 :
+            0;
         if (input.remaining_time > 20 * 1000) {
             if (input.opponent_obstacles <= 5) { // 既に送れてるならしない
                 repeat (i, fire_depth) if (i < fired.size() and not fired[i].empty()) {
