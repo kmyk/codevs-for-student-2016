@@ -393,9 +393,9 @@ namespace simulation {
         result_t result = simulate(workspace, height_map, modified_blocks, 0);
         // result
         repeat (x, width) if (height_map[x] > height) throw simulate_gameover_exception();
-        int erased = 0; repeat (x, width) erased += height_map_original[x] - height_map[x];
+        int result_erased = 0; repeat (x, width) result_erased += height_map_original[x] - height_map[x];
         field_t nfield; repeat (x, width) repeat (y, height) nfield.at[x][y] = workspace.at[x][y];
-        return make_tuple(result, erased, nfield);
+        return make_tuple(result, result_erased, nfield);
     }
 
     vector<pair<result_t, int> > estimate_with_erasing_all(field_t const & field) {
@@ -459,10 +459,11 @@ struct photon_t {
     int turn;
     int score;
     int obstacles; // 負なら相手に送る分 / 相手が発火したらここが変わり次以降の状態が消去される
+    int dropped_obstacles;
     field_t field;
     output_t output; // この手に至る辺
     result_t result; // その結果
-    int erased;
+    int result_erased;
     evaluateion_info_t evaluation;
     weak_ptr<photon_t> parent; // 逆辺
     shared_ptr<array<array<shared_ptr<photon_t>, 4>, 12> > next; // 次状態への辺
@@ -473,10 +474,11 @@ shared_ptr<photon_t> initial_photon(int turn, int obstacles, field_t const & fie
     pho->turn = turn;
     pho->score = 0;
     pho->obstacles = obstacles;
+    pho->dropped_obstacles = count_obstacle_blocks(field);
     pho->field = field;
     pho->output = invalid_output;
     pho->result = {};
-    pho->erased = 0;
+    pho->result_erased = 0;
     pho->parent.reset();
     pho->next = nullptr;
     // evaluation
@@ -501,7 +503,7 @@ void evaluate_photon_for_search(shared_ptr<photon_t> const & pho) {
         acc += k1 * pho->evaluation.estimateds[i].first.chain * 40; // 大連鎖だと誤差、小連鎖でscoreを気にされると不利
         acc -= k1 * pho->evaluation.estimateds[i].second * 4;
     }
-    acc -= 14 * pho->erased; // 無駄に消すべきでない
+    acc -= 14 * pho->result_erased; // 無駄に消すべきでない
     repeat (x, width) repeat (y, height) {
         int dx = min(x, width-x-1);
         if (pho->field.at[x][y] == obstacle_block) {
@@ -521,7 +523,7 @@ void step_photon(shared_ptr<photon_t> const & pho, pack_t const & pack) {
         shared_ptr<photon_t> npho = make_shared<photon_t>();
         npho->output = make_output(x, r);
         try {
-            tie(npho->result, npho->erased, npho->field) = simulate_with_output(pho->field, filled_pack, npho->output);
+            tie(npho->result, npho->result_erased, npho->field) = simulate_with_output(pho->field, filled_pack, npho->output);
         } catch (simulate_invalid_output_exception e) {
             continue;
         } catch (simulate_gameover_exception e) {
@@ -530,6 +532,7 @@ void step_photon(shared_ptr<photon_t> const & pho, pack_t const & pack) {
         npho->turn = pho->turn + 1;
         npho->score = pho->score + npho->result.score;
         npho->obstacles = pho->obstacles - consumed - count_obstacles_from_delta(pho->score, npho->result.score);
+        npho->dropped_obstacles = pho->dropped_obstacles + consumed;
         npho->parent = pho;
         (*pho->next)[x+pack_size-1][r] = npho;
         evaluate_photon_for_search(npho);
@@ -591,6 +594,7 @@ double evaluate_photon_for_output(shared_ptr<photon_t> const & pho, int base_tur
             // double k = pow(1 + 0.015 * stress, -age+1);
             double k = pow(1 + 0.01 * stress, -age+1);
             acc += (20 * stress) + k * (1.2 * pho->result.score); // 発火した それが可能でしかも勝てるというのは大きい
+            acc -= 5 * pho->dropped_obstacles;
             acc -= 3 * max(0, pho->obstacles);
         } else {
             acc = pho->result.score; // 負けてる時はもう全力で
@@ -735,7 +739,7 @@ public:
             field_t const & field = input.self_field;
             auto & last = inputs.back();
             pack_t const & last_filled_pack = fill_obstacles(config.packs[last.turn], last.self_obstacles);
-            result_t result; int erased; field_t nfield; tie(result, erased, nfield) = simulate_with_output(last.self_field, last_filled_pack, outputs.back());
+            result_t result; int result_erased; field_t nfield; tie(result, result_erased, nfield) = simulate_with_output(last.self_field, last_filled_pack, outputs.back());
             if (nfield != field) {
                 cerr << "<<<" << endl;
                 cerr << nfield << endl;
