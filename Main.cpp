@@ -113,7 +113,7 @@ namespace primitive {
     template<size_t H, size_t W>
     int count_block(blocks_t<H,W> const & a, block_t b) {
         int cnt = 0;
-        repeat (x, pack_size) repeat (y, pack_size) if (a.at[x][y] == b) ++ cnt;
+        repeat (x, W) repeat (y, H) if (a.at[x][y] == b) ++ cnt;
         return cnt;
     }
     int count_obstacle_blocks(field_t const & a) {
@@ -510,13 +510,7 @@ void evaluate_photon_for_search(shared_ptr<photon_t> const & pho) {
         acc += k1 * pho->evaluation.estimateds[i].first.chain * 40; // 大連鎖だと誤差、小連鎖でscoreを気にされると不利
         acc -= k1 * pho->evaluation.estimateds[i].second * 4;
     }
-    acc -= 14 * pho->result_erased; // 無駄に消すべきでない
-    repeat (x, width) repeat (y, height) {
-        int dx = min(x, width-x-1);
-        if (pho->field.at[x][y] == obstacle_block) {
-            acc -= 3 + 0.3 * y + 1.2 * dx; // 端に寄せた方がいいけど、あまりそればかり気にされても困る
-        }
-    }
+    acc -= 21 * pho->result_erased; // 無駄に消すべきでない
     pho->evaluation.score = acc + pho->evaluation.permanent_bonus;
 }
 
@@ -573,9 +567,8 @@ void update_photon_obstacles(shared_ptr<photon_t> const & pho, int updated_obsta
     }
 }
 
-const int oppo_depth = 6;
 struct opponent_info_t {
-    array<result_t, oppo_depth> result;
+    vector<result_t> result;
     result_t best;
     int score;
 };
@@ -593,14 +586,12 @@ void evaluate_photon_init(shared_ptr<photon_t> const & pho) {
 
 // 意思決定と探索順序の基準は別
 double evaluate_photon_for_output(shared_ptr<photon_t> const & pho, int base_turn, opponent_info_t const & oppo) {
-    const int stress = 18; // 固定にする
     int age = pho->turn - base_turn;
     double acc = 0;
     if (is_effective_firing(pho->result.score, pho->obstacles, age, oppo)) {
         if (pho->obstacles < 40) {
-            // double k = pow(1 + 0.015 * stress, -age+1);
-            double k = pow(1 + 0.01 * stress, -age+1);
-            acc += (20 * stress) + k * (1.2 * pho->result.score); // 発火した それが可能でしかも勝てるというのは大きい
+            double k = pow(1 + 0.18, -age+1);
+            acc += 400 + k * (1.2 * pho->result.score); // 発火した それが可能でしかも勝てるというのは大きい
             acc -= 5 * pho->dropped_obstacles;
             acc -= 3 * max(0, pho->obstacles);
         } else {
@@ -608,7 +599,7 @@ double evaluate_photon_for_output(shared_ptr<photon_t> const & pho, int base_tur
         }
     } else {
         if (pho->result.chain >= chain_of_fire) {
-            double k = pow(1 + 0.01 * stress, -age+1);
+            double k = pow(1 + 0.18, -age+1);
             acc += k * pho->result.score;
             acc -= 3 * max(0, min(30, pho->obstacles));
         } else {
@@ -669,10 +660,14 @@ void chokudai_search(deque<functional_priority_queue<pair<double, weak_ptr<photo
     assert (initial_turn + beam_depth < config.packs.size());
     assert (beam_depth + 1 < que.size());
     clock_check check(time_limit_msec);
-    while (check()) {
-        repeat (i, beam_depth) {
+    int begin = 0;
+    while (check() and begin < beam_depth) {
+        repeat_from (i, begin, beam_depth) {
             repeat (j, beam_width) {
-                if (que[i].empty()) break;
+                if (que[i].empty()) {
+                    if (i == begin) ++ begin;
+                    break;
+                }
                 shared_ptr<photon_t> pho = que[i].top().second.lock(); que[i].pop();
                 if (not pho) { -- j; continue; } // 無視して同じ深さをもう一度
                 step_photon(pho, config.packs[initial_turn + i]);
@@ -739,6 +734,8 @@ public:
         cerr << "remaining time: " << input.remaining_time << endl;
         cerr << "score: " << (scores.empty() ? 0 : scores.back()) << endl;
         cerr << "obstacles: " << input.self_obstacles - input.opponent_obstacles << endl;
+        cerr << "self dropped obstacles: " << count_obstacle_blocks(input.self_field) << endl;
+        cerr << "opp. dropped obstacles: " << count_obstacle_blocks(input.opponent_field) << endl;
         cerr << "self estimated chain: " << estimate_with_erasing(input.self_field).chain << endl;
         cerr << "opp. estimated chain: " << estimate_with_erasing(input.opponent_field).chain << endl;
 
@@ -841,9 +838,11 @@ public:
 
         // opponent
         watch = stopwatch();
+        const int oppo_depth = max<int>(4, 8 - (180 * 1000 - input.remaining_time) / (30 * 1000));
         opponent_info_t oppo = {}; {
             const int beam_width = 60;
             const int beam_depth = oppo_depth;
+            oppo.result.resize(oppo_depth);
             auto cont = [&](shared_ptr<photon_t> const & pho) {
                 int age = pho->turn - input.turn;
                 assert (age >= 1);
@@ -865,8 +864,8 @@ public:
         output_t output = invalid_output; {
             const int stress = max(self_history.back()->evaluation.estimateds.front().first.chain, oppo.best.chain);
             const int beam_width = 3;
-            const int beam_depth = max(6, 18 - stress/4);
-            const int time_limit = min(input.remaining_time / 30, max(1000, 140 * stress)); // msec
+            const int beam_depth = max(22 - min(10, input.turn), 18 - stress/4);
+            const int time_limit = min(input.remaining_time / 30, max(1200, 170 * stress)); // msec
             while (beam_depth+1 >= que.size()) que.emplace_back(compare_photon_with_first);
             while (fired.size() < que.size()) fired.emplace_back(compare_photon_with_first);
             bool is_fired = false;
@@ -929,9 +928,10 @@ public:
 
         // 刺せるなら強制発火
         watch = stopwatch();
+        const int fire_depth = 3 - (input.remaining_time < 60 * 1000) - (input.remaining_time < 30 * 1000);
         if (input.remaining_time > 20 * 1000) {
             if (input.opponent_obstacles <= 5) { // 既に送れてるならしない
-                repeat (i, 2) if (i < fired.size() and not fired[i].empty()) {
+                repeat (i, fire_depth) if (i < fired.size() and not fired[i].empty()) {
                     shared_ptr<photon_t> const & best = fired[i].top().second.lock();
                     assert (best);
                     if (output == best->output) break; // もう発火することにしてあるなら見ない
