@@ -8,20 +8,21 @@ archive:
 	- rm Main.zip
 	zip Main.zip run.sh a.out
 
-build: build/fast
 build/debug/slow:
 	$(CXX) $(CXXFLAGS) -g -fsanitize=undefined -D_GLIBCXX_DEBUG Main.cpp
 build/debug:
 	$(CXX) $(CXXFLAGS) -g Main.cpp
-build/fast:
+build:
 	$(CXX) $(CXXFLAGS) -DNDEBUG Main.cpp
+build/fast:
+	$(CXX) $(CXXFLAGS) -DRELEASE Main.cpp
 build/fast/profile-generate:
 	- rm a.out Main.gcda
-	$(CXX) $(CXXFLAGS) -DNDEBUG -fprofile-generate Main.cpp
+	$(CXX) $(CXXFLAGS) -DRELEASE -fprofile-generate Main.cpp
 	# note: use "sh -c ./a.out"
 build/fast/profile-use:
 	[ -e Main.gcda ]
-	$(CXX) $(CXXFLAGS) -DNDEBUG -fprofile-use Main.cpp
+	$(CXX) $(CXXFLAGS) -DRELEASE -fprofile-use Main.cpp
 
 client:
 	javaws codevs_for_student.jnlp &

@@ -1,3 +1,8 @@
+#ifdef RELEASE
+#ifndef NDEBUG
+#define NDEBUG
+#endif
+#endif
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -726,8 +731,11 @@ public:
         config = a_config;
     }
     output_t think(input_t const & input) {
+#ifndef RELEASE
         stopwatch watch, total_watch;
+#endif
 
+#ifndef RELEASE
         // logging
         cerr << endl;
         cerr << "turn: " << input.turn << endl;
@@ -754,6 +762,7 @@ public:
             }
             assert (nfield == field);
         }
+#endif
 
         // prepare
         if (input.turn == 0) {
@@ -786,7 +795,9 @@ public:
                     que.emplace_back(compare_photon_with_first);
                     que.back().emplace(pho->evaluation.score, pho);
                 } else if (updated) {
+#ifndef RELEASE
                     cerr << "queue shifted" << endl;
+#endif
                     auto shift = [](deque<functional_priority_queue<pair<double, weak_ptr<photon_t> > > > & que) {
                         que[0] = functional_priority_queue<pair<double, weak_ptr<photon_t> > >(compare_photon_with_first);
                         repeat (i, que.size() - 1) {
@@ -824,7 +835,9 @@ public:
                 }
             }
             if (output == invalid_output) {
+#ifndef RELEASE
                 cerr << "oppo reset cache" << endl;
+#endif
                 oppo_history.push_back(initial_photon(input.turn, input.opponent_obstacles - input.self_obstacles, input.opponent_field));
             } else {
                 prune_photon(pho, output);
@@ -837,7 +850,9 @@ public:
         }
 
         // opponent
+#ifndef RELEASE
         watch = stopwatch();
+#endif
         const int oppo_depth = max<int>(4, 8 - (180 * 1000 - input.remaining_time) / (30 * 1000));
         opponent_info_t oppo = {}; {
             const int beam_width = 60;
@@ -854,13 +869,17 @@ public:
         }
         oppo.best = *whole(max_element, oppo.result);
         repeat (i, oppo_depth) setmax<int>(oppo.score, pow(0.8, i) * oppo.result[i].score); // ここけっこう重要
+#ifndef RELEASE
         repeat (i, oppo_depth) {
             cerr << "oppo " << i << ": " << oppo.result[i].chain << "c " << oppo.result[i].score << "pt" << endl;
         }
         cerr << "oppo elapsed: " << watch() << "ms" << endl;
+#endif
 
         // chokudai search
+#ifndef RELEASE
         watch = stopwatch();
+#endif
         output_t output = invalid_output; {
             const int stress = max(self_history.back()->evaluation.estimateds.front().first.chain, oppo.best.chain);
             const int beam_width = 3;
@@ -880,6 +899,7 @@ public:
                     is_fired = cur_is_fired;
                     best_score = cur_score;
                     result = pho;
+#ifndef RELEASE
                     cerr << "result: +" << age << "t " << cur_score << "pt";
                     if (pho->result.chain >= chain_of_fire) {
                         bool is_eff = is_effective_firing(pho->result.score, pho->obstacles, age, oppo);
@@ -888,6 +908,7 @@ public:
                         cerr << " (" << pho->evaluation.estimateds.front().first.chain << "c " << pho->evaluation.estimateds.front().first.score << "pt)";
                     }
                     cerr << endl;
+#endif
                 }
                 if (pho->result.chain < chain_of_fire) { // 打ち切るか否か
                     return pho;
@@ -896,7 +917,9 @@ public:
                     return shared_ptr<photon_t>(nullptr);
                 }
             };
+#ifndef RELEASE
             cerr << "load cache" << endl;
+#endif
             repeat (i, fired.size()) { // 古い葉は覚えておいて直接見る
                 while (not fired[i].empty()) {
                     shared_ptr<photon_t> const & pho = fired[i].top().second.lock();
@@ -906,13 +929,16 @@ public:
                     break;
                 }
             }
+#ifndef RELEASE
             cerr << "chokudai search" << endl;
+#endif
             chokudai_search(que, config, input.turn, beam_width, beam_depth, time_limit, cont);
             if (result) {
                 shared_ptr<photon_t> pho = parent_photon_at(result, input.turn + 1);
                 assert (pho);
                 output = pho->output;
             }
+#ifndef RELEASE
             repeat (i, beam_depth) cerr << "width at " << i << ": beam " << que[i].size() << " / fire " << fired[i].size()<< endl;
             cerr << "done" << endl;
             repeat (i, fired.size()) {
@@ -923,11 +949,16 @@ public:
                     cerr << "fire: +" << age << "t " << pho->result.chain << "c " << pho->result.score << "pt" << (is_eff ? " eff." : "") << endl;
                 }
             }
+#endif
         }
+#ifndef RELEASE
         cerr << "self elapsed: " << watch() << "ms" << endl;
+#endif
 
         // 刺せるなら強制発火
+#ifndef RELEASE
         watch = stopwatch();
+#endif
         const int fire_depth = 3 - (input.remaining_time < 60 * 1000) - (input.remaining_time < 30 * 1000);
         if (input.remaining_time > 20 * 1000) {
             if (input.opponent_obstacles <= 5) { // 既に送れてるならしない
@@ -936,7 +967,9 @@ public:
                     assert (best);
                     if (output == best->output) break; // もう発火することにしてあるなら見ない
                     if (best->obstacles + max(30, oppo.result[0].score/5 + 10) > 0) continue; // 明らかにだめな場合はしない
+#ifndef RELEASE
                     cerr << "firing check for: +" << 1+i << "t " << best->result.chain << "c " << best->result.score << "pt" << endl;
+#endif
                     const int beam_width = 120;
                     const int beam_depth = 10;
                     auto cont = [&](shared_ptr<photon_t> pho) {
@@ -948,7 +981,9 @@ public:
                             pho->obstacles += best->result.score/5; // ここで足す
                         }
                         if (- pho->obstacles >= 20) {
+#ifndef RELEASE
                             cerr << "counter found: +" << age << "t " << pho->result.chain << "c " << pho->result.score << "pt" << endl;
+#endif
                             throw counter_exception();
                         }
                         return pho->result.chain < chain_of_fire ? pho : nullptr;
@@ -957,19 +992,25 @@ public:
                     try {
                         beam_search(initial, config, beam_width, beam_depth, cont);
                         output = parent_photon_at(best, input.turn + 1)->output;
+#ifndef RELEASE
                         cerr << "fire" << endl;
+#endif
                     } catch (counter_exception e) {
                         // nop
                     }
                 }
             }
         }
+#ifndef RELEASE
         cerr << "firing beam elapsed: " << watch() << "ms" << endl;
+#endif
 
         // finalize
         const pack_t filled_pack = fill_obstacles(config.packs[input.turn], input.self_obstacles);
         if (output == invalid_output) {
+#ifndef RELEASE
             cerr << "search failed..." << endl;
+#endif
             int score = -1;
             repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
                 try {
@@ -984,9 +1025,11 @@ public:
                     // nop
                 }
             }
+#ifndef RELEASE
             if (output == invalid_output) {
                 cerr << "greedy failed..." << endl;
             }
+#endif
         }
         if (is_valid_output(input.self_field, filled_pack, output)) {
             inputs.push_back(input);
@@ -997,7 +1040,9 @@ public:
             prune_photon(self_history.back(), output);
             self_history.push_back((*self_history.back()->next)[output.x+pack_size-1][output.rotate]);
         }
+#ifndef RELEASE
         cerr << "total elapsed: " << total_watch() << "ms" << endl;
+#endif
         return output;
     }
 };
@@ -1010,7 +1055,12 @@ int main() {
     AI ai(config);
     repeat (i, config.packs.size()) {
         input_t input; cin >> input;
-        if (not cin) { cerr << "error: input failed" << endl; break; }
+        if (not cin) {
+#ifndef RELEASE
+            cerr << "error: input failed" << endl;
+#endif
+            break;
+        }
         output_t output = ai.think(input);
         cout << output << endl;
         cout.flush();
