@@ -46,7 +46,8 @@ ranking/update:
 	curl 'http://52.198.238.77/codevsforstudent/user?course=Hard' > ${tmpuserfile}
 	cp ${tmpuserfile} ${userfile}
 
+io_target=1P
 io/tailf:
-	find codevsforstudent/log/io -name '1P_*_stderr.txt' -printf "%T+\t%p\n" | sort -r | head -n 1 | cut -f 2 | xargs tailf -n-1
+	find codevsforstudent/log/io -name '${io_target}_*_stderr.txt' -printf "%T+\t%p\n" | sort -r | head -n 1 | cut -f 2 | xargs tailf -n-1
 io/cat:
-	find codevsforstudent/log/io -name '1P_*_stderr.txt' -printf "%T+\t%p\n" | sort -r | head -n 1 | cut -f 2 | xargs cat
+	find codevsforstudent/log/io -name '${io_target}_*_stderr.txt' -printf "%T+\t%p\n" | sort -r | head -n 1 | cut -f 2 | xargs cat
