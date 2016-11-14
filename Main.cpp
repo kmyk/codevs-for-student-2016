@@ -576,12 +576,13 @@ struct opponent_info_t {
     vector<result_t> result;
     result_t best;
     int score;
+    int dropped_obstacles;
 };
 
 const int chain_of_fire = 6; // 発火したとみなすべき連鎖数 (inclusive)
 bool is_effective_firing(int score, int obstacles, int age, opponent_info_t const & oppo) {
     assert (age >= 1);
-    return oppo.score + max(obstacles + 20, 60) * 5 < score;
+    return oppo.score + max(obstacles + 20, max(20, 60 - oppo.dropped_obstacles/2)) * 5 < score;
 }
 
 void evaluate_photon_init(shared_ptr<photon_t> const & pho) {
@@ -867,6 +868,7 @@ public:
             shared_ptr<photon_t> initial = oppo_history.back();
             beam_search(initial, config, beam_width, beam_depth, cont);
         }
+        oppo.dropped_obstacles = oppo_history.back()->dropped_obstacles;
         oppo.best = *whole(max_element, oppo.result);
         repeat (i, oppo_depth) setmax<int>(oppo.score, pow(0.8, i) * oppo.result[i].score); // ここけっこう重要
 #ifndef RELEASE
