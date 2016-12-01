@@ -630,6 +630,10 @@ void prune_photon(shared_ptr<photon_t> const & pho, output_t output) {
     }
 }
 
+bool is_rejected(shared_ptr<photon_t> const & pho) {
+    return pho->result_erased >= 4;
+}
+
 bool compare_photon(shared_ptr<photon_t> const & a, shared_ptr<photon_t> const & b) { return a->evaluation.score < b->evaluation.score; }
 bool compare_photon_reversed(shared_ptr<photon_t> const & a, shared_ptr<photon_t> const & b) { return a->evaluation.score > b->evaluation.score; }
 bool compare_photon_with_score(shared_ptr<photon_t> const & a, shared_ptr<photon_t> const & b) { return a->result.score < b->result.score; }
@@ -790,7 +794,7 @@ public:
                 que.emplace_back(compare_photon_with_first);
                 que.back().emplace(pho->evaluation.score, pho);
             } else {
-                if (pho->result.chain >= chain_of_fire) {
+                if (is_rejected(pho)) {
                     que.clear();
                     fired.clear();
                     que.emplace_back(compare_photon_with_first);
@@ -863,7 +867,7 @@ public:
                 int age = pho->turn - input.turn;
                 assert (age >= 1);
                 setmax(oppo.result[age-1], pho->result);
-                return pho->result.chain < chain_of_fire ? pho : nullptr; // 打ち切るか否か
+                return is_rejected(pho) ? nullptr : pho; // 打ち切るか否か
             };
             shared_ptr<photon_t> initial = oppo_history.back();
             beam_search(initial, config, beam_width, beam_depth, cont);
@@ -912,11 +916,11 @@ public:
                     cerr << endl;
 #endif
                 }
-                if (pho->result.chain < chain_of_fire) { // 打ち切るか否か
-                    return pho;
-                } else {
+                if (is_rejected(pho)) {
                     fired[age-1].emplace(pho->result.score, pho);
                     return shared_ptr<photon_t>(nullptr);
+                } else {
+                    return pho;
                 }
             };
 #ifndef RELEASE
@@ -992,7 +996,7 @@ public:
 #endif
                             throw counter_exception();
                         }
-                        return pho->result.chain < chain_of_fire ? pho : nullptr;
+                        return is_rejected(pho) ? nullptr : pho;
                     };
                     shared_ptr<photon_t> const & initial = oppo_history.back();
                     try {
