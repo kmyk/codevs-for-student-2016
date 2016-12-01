@@ -478,7 +478,8 @@ struct photon_t {
     int result_erased;
     evaluateion_info_t evaluation;
     weak_ptr<photon_t> parent; // 逆辺
-    shared_ptr<array<array<shared_ptr<photon_t>, 4>, 12> > next; // 次状態への辺
+    array<array<bool, 4>, 12> cached;
+    array<array<shared_ptr<photon_t>, 4>, 12> next; // 次状態への辺
 };
 
 shared_ptr<photon_t> initial_photon(int turn, int obstacles, field_t const & field) {
@@ -492,7 +493,8 @@ shared_ptr<photon_t> initial_photon(int turn, int obstacles, field_t const & fie
     pho->result = {};
     pho->result_erased = 0;
     pho->parent.reset();
-    pho->next = nullptr;
+    pho->cached = {};
+    pho->next = {};
     // evaluation
     pho->evaluation.score = 0;
     pho->evaluation.permanent_bonus = 0;
@@ -521,11 +523,11 @@ void evaluate_photon_for_search(shared_ptr<photon_t> const & pho) {
 
 // 次のstepを(まだなら)作成 評価もする
 void step_photon(shared_ptr<photon_t> const & pho, pack_t const & pack) {
-    if (pho->next) return;
     int consumed = count_consumed_obstacles(pack, pho->obstacles);
     pack_t filled_pack = fill_obstacles(pack, consumed);
-    pho->next = make_unique<array<array<shared_ptr<photon_t>, 4>, 12> >();
     repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
+        if (pho->cached[x+pack_size-1][r]) continue;
+        pho->cached[x+pack_size-1][r] = true;
         shared_ptr<photon_t> npho = make_shared<photon_t>();
         npho->output = make_output(x, r);
         try {
@@ -540,7 +542,7 @@ void step_photon(shared_ptr<photon_t> const & pho, pack_t const & pack) {
         npho->obstacles = pho->obstacles - consumed - count_obstacles_from_delta(pho->score, npho->result.score);
         npho->dropped_obstacles = pho->dropped_obstacles + consumed;
         npho->parent = pho;
-        (*pho->next)[x+pack_size-1][r] = npho;
+        pho->next[x+pack_size-1][r] = npho;
         evaluate_photon_for_search(npho);
     }
 }
@@ -550,20 +552,21 @@ template <typename F>
 void update_photon_obstacles(shared_ptr<photon_t> const & pho, int updated_obstacles, vector<pack_t> const & packs, F cont) {
     if (pho->obstacles == updated_obstacles) {
         // nop
-    } else if (not pho->next) {
-        pho->obstacles = updated_obstacles;
-        evaluate_photon_for_search(pho);
     } else {
         int         consumed = count_consumed_obstacles(packs[pho->turn],    pho->obstacles);
         int updated_consumed = count_consumed_obstacles(packs[pho->turn], updated_obstacles);
         pho->obstacles = updated_obstacles;
         evaluate_photon_for_search(pho);
         if (consumed != updated_consumed) {
-            pho->next = nullptr; // 開放
+            repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
+                pho->cached[x+pack_size-1][r] = false;
+                pho->next[x+pack_size-1][r] = nullptr; // 開放
+            }
             cont(pho);
         } else {
             repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
-                shared_ptr<photon_t> npho = (*pho->next)[x+pack_size-1][r];
+                if (not pho->cached[x+pack_size-1][r]) continue;
+                shared_ptr<photon_t> npho = pho->next[x+pack_size-1][r];
                 if (not npho) continue;
                 int next_obstacles = pho->obstacles - updated_consumed - count_obstacles_from_delta(pho->score, npho->result.score);
                 update_photon_obstacles(npho, next_obstacles, packs, cont);
@@ -623,10 +626,10 @@ shared_ptr<photon_t> parent_photon_at(shared_ptr<photon_t> pho, int turn) {
 
 void prune_photon(shared_ptr<photon_t> const & pho, output_t output) {
     assert (pho);
-    if (not pho->next) return;
     repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
         if (x == output.x and r == output.rotate) continue;
-        (*pho->next)[x+pack_size-1][r] = nullptr;
+        pho->cached[x+pack_size-1][r] = false;
+        pho->next[x+pack_size-1][r] = nullptr;
     }
 }
 
@@ -650,7 +653,7 @@ void beam_search(shared_ptr<photon_t> const & initial, config_t const & config, 
         for (shared_ptr<photon_t> const & pho : beam) {
             step_photon(pho, config.packs[initial->turn + i]);
             repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
-                shared_ptr<photon_t> npho = (*pho->next)[x+pack_size-1][r];
+                shared_ptr<photon_t> npho = pho->next[x+pack_size-1][r];
                 if (not npho) continue;
                 npho = cont(npho);
                 if (not npho) continue;
@@ -682,7 +685,7 @@ void chokudai_search(deque<functional_priority_queue<pair<double, weak_ptr<photo
                 if (not pho) { -- j; continue; } // 無視して同じ深さをもう一度
                 step_photon(pho, config.packs[initial_turn + i]);
                 repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
-                    shared_ptr<photon_t> npho = (*pho->next)[x+pack_size-1][r];
+                    shared_ptr<photon_t> npho = pho->next[x+pack_size-1][r];
                     if (not npho) continue;
                     npho = cont(npho);
                     if (not npho) continue;
@@ -832,7 +835,7 @@ public:
             step_photon(pho, config.packs[input.turn-1]);
             output_t output = invalid_output; // 相手の出力は直接は見えない
             repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
-                shared_ptr<photon_t> const & npho = (*pho->next)[x+pack_size-1][r];
+                shared_ptr<photon_t> const & npho = pho->next[x+pack_size-1][r];
                 if (not npho) continue;
                 if (npho->field == input.opponent_field) {
                     output = npho->output;
@@ -846,7 +849,7 @@ public:
                 oppo_history.push_back(initial_photon(input.turn, input.opponent_obstacles - input.self_obstacles, input.opponent_field));
             } else {
                 prune_photon(pho, output);
-                shared_ptr<photon_t> const & npho = (*pho->next)[output.x+pack_size-1][output.rotate];
+                shared_ptr<photon_t> const & npho = pho->next[output.x+pack_size-1][output.rotate];
                 oppo_history.push_back(npho);
                 update_photon_obstacles(npho, input.opponent_obstacles - input.self_obstacles, config.packs, [](shared_ptr<photon_t> const & pho){}); // ここでお邪魔を更新
             }
@@ -987,7 +990,10 @@ public:
                         assert (age >= 1);
                         if (age == 1) {
                             pho = make_shared<photon_t>(*pho);
-                            pho->next = nullptr;
+                            repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
+                                pho->cached[x+pack_size-1][r] = false;
+                                pho->next[x+pack_size-1][r] = nullptr;
+                            }
                             pho->obstacles += best->result.score/5; // ここで足す
                         }
                         if (- pho->obstacles >= 20) {
@@ -1048,7 +1054,7 @@ public:
             int last_score = scores.empty() ? 0 : scores.back();
             scores.push_back(last_score + results.back().score);
             prune_photon(self_history.back(), output);
-            self_history.push_back((*self_history.back()->next)[output.x+pack_size-1][output.rotate]);
+            self_history.push_back(self_history.back()->next[output.x+pack_size-1][output.rotate]);
         }
 #ifndef RELEASE
         cerr << "total elapsed: " << total_watch() << "ms" << endl;
