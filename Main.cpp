@@ -522,28 +522,39 @@ void evaluate_photon_for_search(shared_ptr<photon_t> const & pho) {
 }
 
 // 次のstepを(まだなら)作成 評価もする
-void step_photon(shared_ptr<photon_t> const & pho, pack_t const & pack) {
+void step_photon_inner(shared_ptr<photon_t> const & pho, int consumed, pack_t const & filled_pack, int x, rotate_t r) {
+    if (pho->cached[x+pack_size-1][r]) return;
+    pho->cached[x+pack_size-1][r] = true;
+    shared_ptr<photon_t> npho = make_shared<photon_t>();
+    npho->output = make_output(x, r);
+    try {
+        tie(npho->result, npho->result_erased, npho->field) = simulate_with_output(pho->field, filled_pack, npho->output);
+    } catch (simulate_invalid_output_exception e) {
+        return;
+    } catch (simulate_gameover_exception e) {
+        return;
+    }
+    npho->turn = pho->turn + 1;
+    npho->score = pho->score + npho->result.score;
+    npho->obstacles = pho->obstacles - consumed - count_obstacles_from_delta(pho->score, npho->result.score);
+    npho->dropped_obstacles = pho->dropped_obstacles + consumed;
+    npho->parent = pho;
+    pho->next[x+pack_size-1][r] = npho;
+    evaluate_photon_for_search(npho);
+}
+shared_ptr<photon_t> step_photon(shared_ptr<photon_t> const & pho, pack_t const & pack, output_t output) {
+    if (not pho->cached[output.x+pack_size-1][output.rotate]) {
+        int consumed = count_consumed_obstacles(pack, pho->obstacles);
+        pack_t filled_pack = fill_obstacles(pack, consumed);
+        step_photon_inner(pho, consumed, filled_pack, output.x, output.rotate);
+    }
+    return pho->next[output.x+pack_size-1][output.rotate];
+}
+void step_photon_all(shared_ptr<photon_t> const & pho, pack_t const & pack) {
     int consumed = count_consumed_obstacles(pack, pho->obstacles);
     pack_t filled_pack = fill_obstacles(pack, consumed);
     repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
-        if (pho->cached[x+pack_size-1][r]) continue;
-        pho->cached[x+pack_size-1][r] = true;
-        shared_ptr<photon_t> npho = make_shared<photon_t>();
-        npho->output = make_output(x, r);
-        try {
-            tie(npho->result, npho->result_erased, npho->field) = simulate_with_output(pho->field, filled_pack, npho->output);
-        } catch (simulate_invalid_output_exception e) {
-            continue;
-        } catch (simulate_gameover_exception e) {
-            continue;
-        }
-        npho->turn = pho->turn + 1;
-        npho->score = pho->score + npho->result.score;
-        npho->obstacles = pho->obstacles - consumed - count_obstacles_from_delta(pho->score, npho->result.score);
-        npho->dropped_obstacles = pho->dropped_obstacles + consumed;
-        npho->parent = pho;
-        pho->next[x+pack_size-1][r] = npho;
-        evaluate_photon_for_search(npho);
+        step_photon_inner(pho, consumed, filled_pack, x, r);
     }
 }
 
@@ -651,7 +662,7 @@ void beam_search(shared_ptr<photon_t> const & initial, config_t const & config, 
     repeat (i, beam_depth) {
         if (initial->turn + i >= config.packs.size()) break;
         for (shared_ptr<photon_t> const & pho : beam) {
-            step_photon(pho, config.packs[initial->turn + i]);
+            step_photon_all(pho, config.packs[initial->turn + i]);
             repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
                 shared_ptr<photon_t> npho = pho->next[x+pack_size-1][r];
                 if (not npho) continue;
@@ -683,7 +694,7 @@ void chokudai_search(deque<functional_priority_queue<pair<double, weak_ptr<photo
                 }
                 shared_ptr<photon_t> pho = que[i].top().second.lock(); que[i].pop();
                 if (not pho) { -- j; continue; } // 無視して同じ深さをもう一度
-                step_photon(pho, config.packs[initial_turn + i]);
+                step_photon_all(pho, config.packs[initial_turn + i]);
                 repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
                     shared_ptr<photon_t> npho = pho->next[x+pack_size-1][r];
                     if (not npho) continue;
@@ -702,6 +713,63 @@ void chokudai_search(shared_ptr<photon_t> const & initial, config_t const & conf
     repeat (i, beam_depth + 1) que.emplace_back(compare_photon_with_first);
     que[0].emplace(initial->evaluation.score, initial);
     chokudai_search(que, config, initial->turn, beam_width, beam_depth, time_limit_msec, cont);
+}
+
+double run_photon(shared_ptr<photon_t> pho, vector<output_t> outputs, config_t const & config) {
+    double score = pho->evaluation.score;
+    for (auto output : outputs) {
+        pho = step_photon(pho, config.packs[pho->turn], output);
+        score *= 0.3;
+        if (not pho) break;
+        score = pho->score;
+    }
+    return score;
+}
+
+template <typename Generator>
+void simulated_annealing(shared_ptr<photon_t> const & initial, config_t const & config, int depth, ll time_limit_msec, Generator & gen) {
+    uniform_int_distribution<int> dist_i(0, depth-1);
+    uniform_int_distribution<int> dist_x(-pack_size+1, width-1);
+    uniform_int_distribution<int> dist_r(0, 3);
+    vector<output_t> outputs(depth);
+    repeat (i,depth) outputs[i] = make_output(dist_x(gen), dist_r(gen));
+    double score = run_photon(initial, outputs, config);
+    double best = score;
+    chrono::high_resolution_clock::time_point clock_begin = chrono::high_resolution_clock::now();
+int cnt = 0;
+    while (true) {
+        chrono::high_resolution_clock::time_point clock_current = chrono::high_resolution_clock::now();
+        double t = chrono::duration_cast<chrono::milliseconds>(clock_current - clock_begin).count() /(double) time_limit_msec;
+        if (1 < t) break;
+        repeat (loop,100) {
+            vector<pair<int,output_t> > diff; {
+                int i = dist_i(gen);
+                diff.emplace_back(i, outputs[i]);
+                outputs[i] = make_output(dist_x(gen), dist_r(gen));
+                if (loop % 2 == 0) {
+                    int j = max(0, min(depth-1, i + uniform_int_distribution<int>(-2, +2)(gen)));
+                    if (j != 0) {
+                        diff.emplace_back(j, outputs[j]);
+                        outputs[j] = make_output(dist_x(gen), dist_r(gen));
+                    }
+                }
+            }
+            double nscore = run_photon(initial, outputs, config);
+            const bool force_next = (t+99)/100 < uniform_real_distribution<double>()(gen);
+            if (score < nscore or force_next) {
+                score = nscore;
+            } else {
+                for (auto it : diff) outputs[it.first] = it.second; // revert
+            }
+            if (best < score) {
+                best = score;
+                cerr << "updated: " << score << " (" << t << ")" << endl;
+            }
+++ cnt;
+        }
+cerr << cnt << " times " << score << endl;
+    }
+cerr << cnt << " times " << best << endl;
 }
 
 struct counter_exception {}; // 刺し判定の大域脱出用
@@ -791,7 +859,7 @@ public:
                 }
             }
             evaluate_photon_init(pho);
-            step_photon(pho, config.packs[input.turn]);
+            step_photon_all(pho, config.packs[input.turn]);
             // ビームのcacheの更新
             if (input.turn == 0) {
                 que.emplace_back(compare_photon_with_first);
@@ -832,7 +900,7 @@ public:
         }
         if (input.turn != 0) { // 相手の
             shared_ptr<photon_t> const & pho = oppo_history.back();
-            step_photon(pho, config.packs[input.turn-1]);
+            step_photon_all(pho, config.packs[input.turn-1]);
             output_t output = invalid_output; // 相手の出力は直接は見えない
             repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
                 shared_ptr<photon_t> const & npho = pho->next[x+pack_size-1][r];
@@ -854,7 +922,7 @@ public:
                 update_photon_obstacles(npho, input.opponent_obstacles - input.self_obstacles, config.packs, [](shared_ptr<photon_t> const & pho){}); // ここでお邪魔を更新
             }
             evaluate_photon_init(oppo_history.back());
-            step_photon(oppo_history.back(), config.packs[input.turn]);
+            step_photon_all(oppo_history.back(), config.packs[input.turn]);
         }
 
         // opponent
