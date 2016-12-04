@@ -31,6 +31,7 @@ template <class T> void setmax(T & a, T const & b) { if (a < b) a = b; }
 template <class T> void setmin(T & a, T const & b) { if (b < a) a = b; }
 bool is_on_field(int y, int x, int h, int w) { return 0 <= y and y < h and 0 <= x and x < w; }
 
+// 2次元平面上の点 (整数)
 struct point_t { int y, x; };
 point_t point(int y, int x) { return (point_t) { y, x }; }
 point_t operator + (point_t const & a, point_t const & b) { return point(a.y + b.y, a.x + b.x); }
@@ -46,6 +47,8 @@ bool operator <  (point_t a, point_t b) { return make_pair(a.y, a.x) <  make_pai
 template <typename T>
 using functional_priority_queue = priority_queue<T, vector<T>, function<bool (T const &, T const &)> >;
 
+// 時間計測用util
+// chokudai search等の終了判定用
 struct clock_check {
     chrono::high_resolution_clock::time_point clock_end;
     clock_check(ll msec) {
@@ -58,6 +61,8 @@ struct clock_check {
     }
 };
 
+// 時間計測用util
+// 主にdebug出力用
 struct stopwatch {
     chrono::high_resolution_clock::time_point clock_begin;
     stopwatch() {
@@ -76,6 +81,7 @@ namespace primitive {
     const int erasing_sum = 10;
     const int turn_number = 500;
 
+    // ブロックの2次元配列
     typedef char block_t;
     const block_t empty_block = 0;
     const block_t obstacle_block = erasing_sum + 1;
@@ -131,6 +137,7 @@ namespace primitive {
         return cnt;
     }
 
+    // ゲームの始めにのみ与えられる入力
     const int dangerline = height + 1;
     struct config_t {
         // int width, height;
@@ -149,6 +156,7 @@ namespace primitive {
         return in;
     }
 
+    // 各ターンで与えられる入力
     struct input_t {
         int turn;
         int remaining_time; // in msec
@@ -165,6 +173,7 @@ namespace primitive {
         return in;
     }
 
+    // 各ターンでする出力
     typedef int rotate_t;
     struct output_t {
         int x;
@@ -206,6 +215,8 @@ namespace primitive {
         return max(0, min(count_empty_blocks(pack), obstacles));
     }
 
+    // 得点計算
+    // 連鎖数の種類は少ないので把握しやすさのためにも列挙
     const int chain_coefficient[] = {
         0,
         1, // 1
@@ -249,6 +260,7 @@ namespace primitive {
 using namespace primitive;
 
 namespace simulation {
+    // 列の高さの配列
     template<size_t H, size_t W>
     array<int,W> make_height_map(blocks_t<H,W> const & field) {
         array<int,W> h;
@@ -275,6 +287,7 @@ namespace simulation {
         }
         return modified_blocks;
     }
+    // 変化したブロックの位置から消える並びを列挙
     template<size_t H, size_t W>
     vector<pair<point_t,int> > collect_erases(blocks_t<H,W> const & field, vector<point_t> const & modified_blocks) {
         static const int dy[] = { -1, -1, 0, 1 }; // 下 右下 右 右上
@@ -318,6 +331,7 @@ namespace simulation {
         erases.erase(whole(unique, erases), erases.end()); // 重複排除
         return erases;
     }
+    // 消える並びから得点を計算しと消えるブロックを列挙
     template<size_t H, size_t W>
     pair<int, vector<point_t> > apply_erases(blocks_t<H,W> const & field, vector<pair<point_t,int> > const & erases) {
         static const int dy[] = { -1, -1, 0, 1 }; // 下 右下 右 右上
@@ -339,6 +353,7 @@ namespace simulation {
         used.erase(whole(unique, used), used.end());
         return { erase_count, used };
     }
+    // 実際に消してブロックを降らせる
     template<size_t H, size_t W>
     vector<point_t> erase_blocks(blocks_t<H,W> & field, array<int,W> & height_map, vector<point_t> const & points_to_erase) {
         auto & at = field.at;
@@ -416,6 +431,7 @@ namespace simulation {
         return make_tuple(result, result_erased, nfield);
     }
 
+    // 空きマスに8近傍で隣接するブロックをひとつ消して連鎖を見る
     vector<pair<result_t, int> > estimate_with_erasing_all(field_t const & field) {
         const array<int,width> height_map = make_height_map(field);
         vector<pair<result_t, int> > acc;
@@ -448,6 +464,7 @@ namespace simulation {
         })->first;
     }
 
+    // 各座標に1ブロック落としてみて連鎖を見る (遅いし精度悪い)
     result_t estimate_with_drop(field_t const & field) {
         const array<int,width> height_map = make_height_map(field);
         result_t acc = { -1, 0 };
@@ -468,6 +485,10 @@ namespace simulation {
 }
 using namespace simulation;
 
+// ビームサーチのための状態
+// TODO: Flyweightすると速い？
+// TODO: ビームだし光子と呼んでるが一般に通じるいい名前はないか Kripke-semanticsあたりの言葉が使えるか？
+// shared_ptr/weak_ptr の参照カウントは到達可能性判定にも流用してるので注意
 struct evaluateion_info_t {
     double score;
     double permanent_bonus;
@@ -485,7 +506,7 @@ struct photon_t {
     evaluateion_info_t evaluation;
     weak_ptr<photon_t> parent; // 逆辺
     int beam_generation; // ビームに重複して載らないように
-    array<array<bool, 4>, 12> cached;
+    array<array<bool, 4>, 12> cached; // TODO: bitsetの方がよいかな？
     array<array<shared_ptr<photon_t>, 4>, 12> next; // 次状態への辺
 };
 
@@ -510,7 +531,8 @@ shared_ptr<photon_t> initial_photon(int turn, int obstacles, field_t const & fie
     return pho;
 }
 
-// 評価 諸々を気にせず純粋に盤面のみから
+// 探索用の評価
+// 諸々を気にせず純粋に盤面のみからやる
 void evaluate_photon_for_search(shared_ptr<photon_t> const & pho) {
     vector<pair<result_t, int> > estimateds = estimate_with_erasing_all(pho->field);
     pho->evaluation.estimateds.resize(min<int>(3, estimateds.size()));
@@ -571,7 +593,7 @@ void step_photon_all(shared_ptr<photon_t> const & pho, pack_t const & pack) {
     }
 }
 
-// 相手の発火でお邪魔が増えたとき
+// 相手の発火でお邪魔が増えたとき 降るお邪魔が変化した場合は破棄
 template <typename F>
 void update_photon_obstacles(shared_ptr<photon_t> const & pho, int updated_obstacles, vector<pack_t> const & packs, F cont) {
     if (pho->obstacles == updated_obstacles) {
@@ -599,6 +621,7 @@ void update_photon_obstacles(shared_ptr<photon_t> const & pho, int updated_obsta
     }
 }
 
+// 凝視の結果
 struct opponent_info_t {
     vector<result_t> result;
     result_t best;
@@ -607,6 +630,7 @@ struct opponent_info_t {
 };
 
 const int chain_of_fire = 6; // 発火したとみなすべき連鎖数 (inclusive)
+// 積極的に発火する価値のある連鎖か否か
 bool is_effective_firing(int score, int obstacles, int age, opponent_info_t const & oppo) {
     assert (age >= 1);
     return oppo.score + max(obstacles + 20, max(20, 60 - oppo.dropped_obstacles/2)) * 5 < score;
@@ -617,7 +641,8 @@ void evaluate_photon_init(shared_ptr<photon_t> const & pho) {
     pho->evaluation.permanent_bonus = 0;
 }
 
-// 意思決定と探索順序の基準は別
+// 出力用の評価
+// 意思決定と探索順序の基準は別なのが自然
 double evaluate_photon_for_output(shared_ptr<photon_t> const & pho, int base_turn, opponent_info_t const & oppo) {
     int age = pho->turn - base_turn;
     double acc = 0;
@@ -659,6 +684,7 @@ vector<output_t> outputs_photon_from(shared_ptr<photon_t> pho, int turn) {
     return outputs;
 }
 
+// 別の世界線となった状態を開放
 void prune_photon(shared_ptr<photon_t> const & pho, output_t output) {
     assert (pho);
     repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
@@ -668,9 +694,10 @@ void prune_photon(shared_ptr<photon_t> const & pho, output_t output) {
     }
 }
 
+// ビームから落とすか否か
 bool is_rejected(shared_ptr<photon_t> const & pho) {
     shared_ptr<photon_t> parent = pho->parent.lock();
-    return parent and pho->dropped_numbers <= parent->dropped_numbers;
+    return parent and pho->dropped_numbers <= parent->dropped_numbers; // 連鎖したら終了
 }
 
 bool compare_photon(shared_ptr<photon_t> const & a, shared_ptr<photon_t> const & b) { return a->evaluation.score < b->evaluation.score; }
@@ -704,8 +731,8 @@ void beam_search(shared_ptr<photon_t> const & initial, config_t const & config, 
     }
 }
 
-// 焼き鈍しだったもの 操作列の一部だけ変えて後ろはそのまま
-// 結果的によいが途中によくない部分がある場合でその部分だけ個別に修正したい
+// 焼き鈍しだったもの 操作列の一部だけ変えて後ろはそのままな近傍を見る
+// 途中によくない部分がある場合でその部分だけ個別に修正したいので
 template <typename F>
 void anneal_photon(shared_ptr<photon_t> const & initial, vector<output_t> outputs, config_t const & config, deque<functional_priority_queue<pair<double, weak_ptr<photon_t> > > > & que, int beam_generation, F cont) {
     shared_ptr<photon_t> pho = initial;
@@ -779,29 +806,14 @@ private:
     vector<result_t> results;
 
 private:
-    default_random_engine engine;
-    double random() {
-        uniform_real_distribution<double> dist;
-        return dist(engine);
-    }
-    int randint(int l, int r) { // [l, r]
-        uniform_int_distribution<int> dist(l, r);
-        return dist(engine);
-    }
-
-private:
-    static const int beam_small_width = 3;
-    static const int beam_chain_max = 32;
-    static constexpr double beam_output_limit_rate = 0.3;
-    vector<shared_ptr<photon_t> > self_history;
+    vector<shared_ptr<photon_t> > self_history; // 自分の状態の履歴 参照カウントの保持も兼ねて
     vector<shared_ptr<photon_t> > oppo_history;
-    deque<functional_priority_queue<pair<double, weak_ptr<photon_t> > > > que;
-    deque<functional_priority_queue<pair<double, weak_ptr<photon_t> > > > fired;
-    int beam_generation; // 世代
+    deque<functional_priority_queue<pair<double, weak_ptr<photon_t> > > > que; // 現在のビーム
+    deque<functional_priority_queue<pair<double, weak_ptr<photon_t> > > > fired; // 発火により摘まれた葉
+    int beam_generation; // ビームの世代
 
 public:
     AI(config_t const & a_config) {
-        engine = default_random_engine(); // fixed seed
         config = a_config;
     }
     output_t think(input_t const & input) {
@@ -839,12 +851,12 @@ public:
 #endif
 
         // prepare
-        if (input.turn == 0) {
+        if (input.turn == 0) { // 初期化
             self_history.push_back(initial_photon(input.turn, input.self_obstacles,     input.self_field));
             oppo_history.push_back(initial_photon(input.turn, input.opponent_obstacles, input.opponent_field));
             beam_generation = 1;
         }
-        { // 自分の
+        { // 自分のビーム準備
             shared_ptr<photon_t> const & pho = self_history.back();
             vector<shared_ptr<photon_t> > updateds;
             bool updated = (pho->obstacles != input.self_obstacles - input.opponent_obstacles);
@@ -904,7 +916,7 @@ public:
                 }
             }
         }
-        if (input.turn != 0) { // 相手の
+        if (input.turn != 0) { // 相手の準備
             shared_ptr<photon_t> const & pho = oppo_history.back();
             step_photon_all(pho, config.packs[input.turn-1]);
             output_t output = invalid_output; // 相手の出力は直接は見えない
@@ -931,7 +943,7 @@ public:
             step_photon_all(oppo_history.back(), config.packs[input.turn]);
         }
 
-        // opponent
+        // 相手側の探索
 #ifndef RELEASE
         watch = stopwatch();
 #endif
@@ -959,15 +971,15 @@ public:
         cerr << "oppo elapsed: " << watch() << "ms" << endl;
 #endif
 
-        // chokudai search
+        // メインの探索 chokudai search
 #ifndef RELEASE
         watch = stopwatch();
 #endif
         output_t output = invalid_output; {
             const int estimated_chain = self_history.back()->evaluation.estimateds.front().first.chain;
-            const int beam_width = 3;
-            const int beam_depth = max(22 - min(14, input.turn), 18 - estimated_chain/2);
-            const int time_limit = min(input.remaining_time / 30, max(1200, 170 * max(estimated_chain, oppo.best.chain))); // msec
+            const int beam_width = 3; // TODO: この値がどういう意味を持つか理解する
+            const int beam_depth = max(22 - min(14, input.turn), 18 - estimated_chain/2); // いい感じに減少させる
+            const int time_limit = min(input.remaining_time / 30, max(1200, 170 * max(estimated_chain, oppo.best.chain))); // msec // 毎ターン数秒ずつ
             while (beam_depth+1 >= que.size()) que.emplace_back(compare_photon_with_first);
             while (fired.size() < que.size()) fired.emplace_back(compare_photon_with_first);
             bool is_fired = false;
@@ -994,7 +1006,7 @@ public:
 #endif
                 }
                 if (is_rejected(pho)) {
-                    fired[age-1].emplace(pho->result.score, pho);
+                    fired[age-1].emplace(pho->result.score, pho); // ここで葉の控えに追加
                     return shared_ptr<photon_t>(nullptr);
                 } else {
                     return pho;
@@ -1008,7 +1020,7 @@ public:
                     shared_ptr<photon_t> const & pho = fired[i].top().second.lock();
                     if (not pho) { fired[i].pop(); continue; } // だめなのを削る
                     cont(pho);
-                    anneal_photon(self_history.back(), outputs_photon_from(pho, input.turn), config, que, beam_generation, cont);
+                    anneal_photon(self_history.back(), outputs_photon_from(pho, input.turn), config, que, beam_generation, cont); // 近傍見ておく
                     break;
                 }
             }
@@ -1038,7 +1050,7 @@ public:
         cerr << "self elapsed: " << watch() << "ms" << endl;
 #endif
 
-        // 刺せるなら強制発火
+        // 相手を刺せるなら強制発火
 #ifndef RELEASE
         watch = stopwatch();
 #endif
@@ -1098,7 +1110,7 @@ public:
 
         // finalize
         const pack_t filled_pack = fill_obstacles(config.packs[input.turn], input.self_obstacles);
-        if (output == invalid_output) {
+        if (output == invalid_output) { // もうだめなら悪あがきの貪欲
 #ifndef RELEASE
             cerr << "search failed..." << endl;
 #endif
@@ -1118,7 +1130,7 @@ public:
             }
 #ifndef RELEASE
             if (output == invalid_output) {
-                cerr << "greedy failed..." << endl;
+                cerr << "greedy failed..." << endl; // ここに来たら終了
             }
 #endif
         }
