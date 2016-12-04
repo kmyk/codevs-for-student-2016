@@ -124,6 +124,12 @@ namespace primitive {
     int count_obstacle_blocks(field_t const & a) {
         return count_block(a, obstacle_block);
     }
+    template<size_t H, size_t W>
+    int count_number_blocks(blocks_t<H,W> const & a) {
+        int cnt = 0;
+        repeat (x, W) repeat (y, H) if (a.at[x][y] != empty_block and a.at[x][y] != obstacle_block) ++ cnt;
+        return cnt;
+    }
 
     const int dangerline = height + 1;
     struct config_t {
@@ -472,12 +478,13 @@ struct photon_t {
     int score;
     int obstacles; // 負なら相手に送る分 / 相手が発火したらここが変わり次以降の状態が消去される
     int dropped_obstacles;
+    int dropped_numbers;
     field_t field;
     output_t output; // この手に至る辺
     result_t result; // その結果
-    int result_erased;
     evaluateion_info_t evaluation;
     weak_ptr<photon_t> parent; // 逆辺
+    int beam_generation; // ビームに重複して載らないように
     array<array<bool, 4>, 12> cached;
     array<array<shared_ptr<photon_t>, 4>, 12> next; // 次状態への辺
 };
@@ -488,11 +495,12 @@ shared_ptr<photon_t> initial_photon(int turn, int obstacles, field_t const & fie
     pho->score = 0;
     pho->obstacles = obstacles;
     pho->dropped_obstacles = count_obstacle_blocks(field);
+    pho->dropped_numbers = count_number_blocks(field);
     pho->field = field;
     pho->output = invalid_output;
     pho->result = {};
-    pho->result_erased = 0;
     pho->parent.reset();
+    pho->beam_generation = 0;
     pho->cached = {};
     pho->next = {};
     // evaluation
@@ -517,18 +525,19 @@ void evaluate_photon_for_search(shared_ptr<photon_t> const & pho) {
         acc += k1 * pho->evaluation.estimateds[i].first.chain * 40; // 大連鎖だと誤差、小連鎖でscoreを気にされると不利
         acc -= k1 * pho->evaluation.estimateds[i].second * 4;
     }
-    acc -= 21 * pho->result_erased; // 無駄に消すべきでない
+    acc += 21 * pho->dropped_numbers; // 無駄に消すべきでない
     pho->evaluation.score = acc + pho->evaluation.permanent_bonus;
 }
 
 // 次のstepを(まだなら)作成 評価もする
-void step_photon_inner(shared_ptr<photon_t> const & pho, int consumed, pack_t const & filled_pack, int x, rotate_t r) {
+void step_photon_inner(shared_ptr<photon_t> const & pho, int numbers, int consumed, pack_t const & filled_pack, int x, rotate_t r) {
     if (pho->cached[x+pack_size-1][r]) return;
     pho->cached[x+pack_size-1][r] = true;
     shared_ptr<photon_t> npho = make_shared<photon_t>();
     npho->output = make_output(x, r);
+    int erased;
     try {
-        tie(npho->result, npho->result_erased, npho->field) = simulate_with_output(pho->field, filled_pack, npho->output);
+        tie(npho->result, erased, npho->field) = simulate_with_output(pho->field, filled_pack, npho->output);
     } catch (simulate_invalid_output_exception e) {
         return;
     } catch (simulate_gameover_exception e) {
@@ -538,23 +547,27 @@ void step_photon_inner(shared_ptr<photon_t> const & pho, int consumed, pack_t co
     npho->score = pho->score + npho->result.score;
     npho->obstacles = pho->obstacles - consumed - count_obstacles_from_delta(pho->score, npho->result.score);
     npho->dropped_obstacles = pho->dropped_obstacles + consumed;
+    npho->dropped_numbers = pho->dropped_numbers + numbers - erased;
+    npho->beam_generation = 0;
     npho->parent = pho;
     pho->next[x+pack_size-1][r] = npho;
     evaluate_photon_for_search(npho);
 }
 shared_ptr<photon_t> step_photon(shared_ptr<photon_t> const & pho, pack_t const & pack, output_t output) {
     if (not pho->cached[output.x+pack_size-1][output.rotate]) {
+        int numbers = count_number_blocks(pack);
         int consumed = count_consumed_obstacles(pack, pho->obstacles);
         pack_t filled_pack = fill_obstacles(pack, consumed);
-        step_photon_inner(pho, consumed, filled_pack, output.x, output.rotate);
+        step_photon_inner(pho, numbers, consumed, filled_pack, output.x, output.rotate);
     }
     return pho->next[output.x+pack_size-1][output.rotate];
 }
 void step_photon_all(shared_ptr<photon_t> const & pho, pack_t const & pack) {
+    int numbers = count_number_blocks(pack);
     int consumed = count_consumed_obstacles(pack, pho->obstacles);
     pack_t filled_pack = fill_obstacles(pack, consumed);
     repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
-        step_photon_inner(pho, consumed, filled_pack, x, r);
+        step_photon_inner(pho, numbers, consumed, filled_pack, x, r);
     }
 }
 
@@ -635,6 +648,17 @@ shared_ptr<photon_t> parent_photon_at(shared_ptr<photon_t> pho, int turn) {
     return pho;
 }
 
+vector<output_t> outputs_photon_from(shared_ptr<photon_t> pho, int turn) {
+    vector<output_t> outputs;
+    while (pho and pho->turn > turn) {
+        outputs.push_back(pho->output);
+        pho = pho->parent.lock();
+    }
+    if (not pho or pho->turn != turn) outputs.clear();
+    whole(reverse, outputs);
+    return outputs;
+}
+
 void prune_photon(shared_ptr<photon_t> const & pho, output_t output) {
     assert (pho);
     repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
@@ -645,7 +669,8 @@ void prune_photon(shared_ptr<photon_t> const & pho, output_t output) {
 }
 
 bool is_rejected(shared_ptr<photon_t> const & pho) {
-    return pho->result_erased >= 4;
+    shared_ptr<photon_t> parent = pho->parent.lock();
+    return parent and pho->dropped_numbers <= parent->dropped_numbers;
 }
 
 bool compare_photon(shared_ptr<photon_t> const & a, shared_ptr<photon_t> const & b) { return a->evaluation.score < b->evaluation.score; }
@@ -679,15 +704,47 @@ void beam_search(shared_ptr<photon_t> const & initial, config_t const & config, 
     }
 }
 
+// 焼き鈍しだったもの 操作列の一部だけ変えて後ろはそのまま
+// 結果的によいが途中によくない部分がある場合でその部分だけ個別に修正したい
 template <typename F>
-void chokudai_search(deque<functional_priority_queue<pair<double, weak_ptr<photon_t> > > > & que, config_t const & config, int initial_turn, int beam_width, int beam_depth, ll time_limit_msec, F cont) {
+void anneal_photon(shared_ptr<photon_t> const & initial, vector<output_t> outputs, config_t const & config, deque<functional_priority_queue<pair<double, weak_ptr<photon_t> > > > & que, int beam_generation, F cont) {
+    shared_ptr<photon_t> pho = initial;
+    repeat (i, outputs.size()) {
+        repeat_from (x, - pack_size + 1, width) repeat (r, 4) {
+            shared_ptr<photon_t> npho = step_photon(pho, config.packs[pho->turn], make_output(x, r));
+            if (not npho) continue;
+            npho = cont(npho);
+            if (not npho) continue;
+            if (npho->beam_generation != beam_generation) {
+                que[i+1].emplace(npho->evaluation.score, npho);
+                if (beam_generation != -1) npho->beam_generation = beam_generation;
+            }
+            repeat_from (j, i+1, outputs.size()) {
+                npho = step_photon(npho, config.packs[npho->turn], outputs[j]);
+                if (not npho) break;
+                npho = cont(npho);
+                if (not npho) break;
+                if (npho->beam_generation != beam_generation) {
+                    que[j+1].emplace(npho->evaluation.score, npho);
+                    if (beam_generation != -1) npho->beam_generation = beam_generation;
+                }
+            }
+        }
+        pho = step_photon(pho, config.packs[pho->turn], outputs[i]);
+    }
+}
+
+template <typename F>
+void chokudai_search(deque<functional_priority_queue<pair<double, weak_ptr<photon_t> > > > & que, config_t const & config, int initial_turn, int beam_width, int beam_depth, int beam_generation, shared_ptr<photon_t> const & initial, ll time_limit_msec, F cont) {
     assert (initial_turn + beam_depth < config.packs.size());
     assert (beam_depth + 1 < que.size());
     clock_check check(time_limit_msec);
     int begin = 0;
+    int loop = 0;
     while (check() and begin < beam_depth) {
         repeat_from (i, begin, beam_depth) {
             repeat (j, beam_width) {
+                loop += 1;
                 if (que[i].empty()) {
                     if (i == begin) ++ begin;
                     break;
@@ -700,76 +757,16 @@ void chokudai_search(deque<functional_priority_queue<pair<double, weak_ptr<photo
                     if (not npho) continue;
                     npho = cont(npho);
                     if (not npho) continue;
+                    if (npho->beam_generation == beam_generation) continue;
                     que[i+1].emplace(npho->evaluation.score, npho);
+                    if (beam_generation != -1) npho->beam_generation = beam_generation;
+                }
+                if (loop % 100 == 0) {
+                    anneal_photon(initial, outputs_photon_from(pho, initial_turn), config, que, beam_generation, cont);
                 }
             }
         }
     }
-}
-
-template <typename F>
-void chokudai_search(shared_ptr<photon_t> const & initial, config_t const & config, int beam_width, int beam_depth, ll time_limit_msec, F cont) {
-    deque<functional_priority_queue<pair<double, weak_ptr<photon_t> > > > que;
-    repeat (i, beam_depth + 1) que.emplace_back(compare_photon_with_first);
-    que[0].emplace(initial->evaluation.score, initial);
-    chokudai_search(que, config, initial->turn, beam_width, beam_depth, time_limit_msec, cont);
-}
-
-double run_photon(shared_ptr<photon_t> pho, vector<output_t> outputs, config_t const & config) {
-    double score = pho->evaluation.score;
-    for (auto output : outputs) {
-        pho = step_photon(pho, config.packs[pho->turn], output);
-        score *= 0.3;
-        if (not pho) break;
-        score = pho->score;
-    }
-    return score;
-}
-
-template <typename Generator>
-void simulated_annealing(shared_ptr<photon_t> const & initial, config_t const & config, int depth, ll time_limit_msec, Generator & gen) {
-    uniform_int_distribution<int> dist_i(0, depth-1);
-    uniform_int_distribution<int> dist_x(-pack_size+1, width-1);
-    uniform_int_distribution<int> dist_r(0, 3);
-    vector<output_t> outputs(depth);
-    repeat (i,depth) outputs[i] = make_output(dist_x(gen), dist_r(gen));
-    double score = run_photon(initial, outputs, config);
-    double best = score;
-    chrono::high_resolution_clock::time_point clock_begin = chrono::high_resolution_clock::now();
-int cnt = 0;
-    while (true) {
-        chrono::high_resolution_clock::time_point clock_current = chrono::high_resolution_clock::now();
-        double t = chrono::duration_cast<chrono::milliseconds>(clock_current - clock_begin).count() /(double) time_limit_msec;
-        if (1 < t) break;
-        repeat (loop,100) {
-            vector<pair<int,output_t> > diff; {
-                int i = dist_i(gen);
-                diff.emplace_back(i, outputs[i]);
-                outputs[i] = make_output(dist_x(gen), dist_r(gen));
-                if (loop % 2 == 0) {
-                    int j = max(0, min(depth-1, i + uniform_int_distribution<int>(-2, +2)(gen)));
-                    if (j != 0) {
-                        diff.emplace_back(j, outputs[j]);
-                        outputs[j] = make_output(dist_x(gen), dist_r(gen));
-                    }
-                }
-            }
-            double nscore = run_photon(initial, outputs, config);
-            const bool force_next = (t+99)/100 < uniform_real_distribution<double>()(gen);
-            if (score < nscore or force_next) {
-                score = nscore;
-            } else {
-                for (auto it : diff) outputs[it.first] = it.second; // revert
-            }
-            if (best < score) {
-                best = score;
-                cerr << "updated: " << score << " (" << t << ")" << endl;
-            }
-++ cnt;
-        }
-cerr << cnt << " times " << score << endl;
-    }
-cerr << cnt << " times " << best << endl;
 }
 
 struct counter_exception {}; // 刺し判定の大域脱出用
@@ -800,6 +797,7 @@ private:
     vector<shared_ptr<photon_t> > oppo_history;
     deque<functional_priority_queue<pair<double, weak_ptr<photon_t> > > > que;
     deque<functional_priority_queue<pair<double, weak_ptr<photon_t> > > > fired;
+    int beam_generation; // 世代
 
 public:
     AI(config_t const & a_config) {
@@ -844,6 +842,7 @@ public:
         if (input.turn == 0) {
             self_history.push_back(initial_photon(input.turn, input.self_obstacles,     input.self_field));
             oppo_history.push_back(initial_photon(input.turn, input.opponent_obstacles, input.opponent_field));
+            beam_generation = 1;
         }
         { // 自分の
             shared_ptr<photon_t> const & pho = self_history.back();
@@ -864,23 +863,28 @@ public:
             if (input.turn == 0) {
                 que.emplace_back(compare_photon_with_first);
                 que.back().emplace(pho->evaluation.score, pho);
+                pho->beam_generation = beam_generation;
             } else {
                 if (is_rejected(pho)) {
                     que.clear();
                     fired.clear();
                     que.emplace_back(compare_photon_with_first);
+                    beam_generation += 1;
                     que.back().emplace(pho->evaluation.score, pho);
+                    pho->beam_generation = beam_generation;
                 } else if (updated) {
 #ifndef RELEASE
                     cerr << "queue shifted" << endl;
 #endif
-                    auto shift = [](deque<functional_priority_queue<pair<double, weak_ptr<photon_t> > > > & que) {
+                    beam_generation += 1;
+                    auto shift = [&](deque<functional_priority_queue<pair<double, weak_ptr<photon_t> > > > & que) {
                         que[0] = functional_priority_queue<pair<double, weak_ptr<photon_t> > >(compare_photon_with_first);
                         repeat (i, que.size() - 1) {
                             while (not que[i+1].empty()) {
                                 shared_ptr<photon_t> npho = que[i+1].top().second.lock(); que[i+1].pop();
                                 if (not npho) continue;
                                 que[i].emplace(npho->evaluation.score, npho);
+                                npho->beam_generation = beam_generation;
                             }
                             que[i+1] = functional_priority_queue<pair<double, weak_ptr<photon_t> > >(compare_photon_with_first);
                         }
@@ -890,7 +894,9 @@ public:
                     for (auto & pho : updateds) {
                         int i = pho->turn - input.turn;
                         while (i >= que.size()) que.emplace_back(compare_photon_with_first);
+                        assert (pho->beam_generation != beam_generation);
                         que[i].emplace(pho->evaluation.score, pho);
+                        pho->beam_generation = beam_generation;
                     }
                 } else {
                     que.pop_front();
@@ -1001,15 +1007,15 @@ public:
                 while (not fired[i].empty()) {
                     shared_ptr<photon_t> const & pho = fired[i].top().second.lock();
                     if (not pho) { fired[i].pop(); continue; } // だめなのを削る
-                    assert (pho->result.chain >= chain_of_fire);
                     cont(pho);
+                    anneal_photon(self_history.back(), outputs_photon_from(pho, input.turn), config, que, beam_generation, cont);
                     break;
                 }
             }
 #ifndef RELEASE
             cerr << "chokudai search" << endl;
 #endif
-            chokudai_search(que, config, input.turn, beam_width, beam_depth, time_limit, cont);
+            chokudai_search(que, config, input.turn, beam_width, beam_depth, beam_generation, self_history.back(), time_limit, cont);
             if (result) {
                 shared_ptr<photon_t> pho = parent_photon_at(result, input.turn + 1);
                 assert (pho);
@@ -1048,6 +1054,7 @@ public:
                     assert (best);
                     if (output == best->output) break; // もう発火することにしてあるなら見ない
                     if (best->obstacles + max(30, oppo.result[0].score/5 + 10) > 0) continue; // 明らかにだめな場合はしない
+                    if (best->obstacles <= 20) continue; // 勝ってるからといって遊ばない
 #ifndef RELEASE
                     cerr << "firing check for: +" << 1+i << "t " << best->result.chain << "c " << best->result.score << "pt" << endl;
 #endif
