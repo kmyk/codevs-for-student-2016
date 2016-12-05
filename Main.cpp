@@ -977,7 +977,7 @@ public:
 #endif
         output_t output = invalid_output; {
             const int estimated_chain = self_history.back()->evaluation.estimateds.front().first.chain;
-            const int beam_width = 3; // TODO: この値がどういう意味を持つか理解する
+            const int beam_width = 8; // TODO: この値がどういう意味を持つか理解する
             const int beam_depth = max(22 - min(14, input.turn), 18 - estimated_chain/2); // いい感じに減少させる
             const int time_limit = min(input.remaining_time / 30, max(1200, 170 * max(estimated_chain, oppo.best.chain))); // msec // 毎ターン数秒ずつ
             while (beam_depth+1 >= que.size()) que.emplace_back(compare_photon_with_first);
